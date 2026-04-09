@@ -1,0 +1,1826 @@
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<div id="root"></div>
+<script>
+const {useState,useEffect,useMemo,useCallback,useRef}=React;
+const ce=React.createElement;
+
+// ── CONSTANTS ──
+const NAVY='#0F2D52';
+const DAYS=['日','月','火','水','木','金','土'];
+const FAC_NAME={kurashiki:'倉敷',tonya:'問屋町'};
+const FAC_LIST=['kurashiki','tonya'];
+const ROLES_DEF=[{id:'general',label:'一般'},{id:'cleaning',label:'清掃専任'},{id:'event',label:'イベント担当'}];
+
+const SHIFT_BG={'A1':'#DBEAFE','早番':'#DCFCE7','遅番':'#F3E8FF','清掃1':'#FEF9C3','清掃2':'#FFEDD5','用意':'#FCE7F3','本番':'#FEE2E2','休':'#F3F4F6','希':'#FFF0F0','有':'#CCFBF1'};
+const SHIFT_FG={'A1':'#1D4ED8','早番':'#166534','遅番':'#6B21A8','清掃1':'#854D0E','清掃2':'#9A3412','用意':'#9D174D','本番':'#991B1B','休':'#9CA3AF','希':'#B91C1C','有':'#0F766E'};
+
+const SHIFT_TIME_DEF={
+  'A1':{kurashiki:'19:00〜24:00',tonya:'19:00〜22:00'},
+  '早番':{both:'10:00〜19:00'},
+  '遅番':{kurashiki:'19:00〜24:00',tonya:'19:00〜22:00'},
+  '清掃1':{kurashiki:'8:30〜11:30',tonya:'10:00〜13:00'},
+  '清掃2':{kurashiki:'22:00〜24:30',tonya:'22:00〜24:00'},
+  '用意':{both:'7:30〜24:30'},
+  '本番':{both:'カレンダー設定'}
+};
+function shiftTime(code,fac){const t=SHIFT_TIME_DEF[code];if(!t)return'';return t.both||t[fac]||'';}
+
+// ── SHIFT LOGIC ──
+function getRequiredShifts(fac,dt){
+  if(dt==='closed')return[];
+  if(dt==='weekday')return[{code:'A1',role:'general'},{code:'清掃1',role:'cleaning'},{code:'清掃2',role:'cleaning'}];
+  const weekend=[{code:'早番',role:'general'},{code:'遅番',role:'general'},{code:'清掃2',role:'cleaning'}];
+  if(fac==='kurashiki')return[{code:'早番',role:'general'},{code:'遅番',role:'general'},{code:'清掃1',role:'cleaning'},{code:'清掃2',role:'cleaning'}];
+  return weekend;
+}
+function ds(yr,mo,d){return`${yr}-${String(mo).padStart(2,'0')}-${String(d).padStart(2,'0')}`;}
+function getDayTypeFac(yr,mo,d,shared,facSpec){
+  const date=ds(yr,mo,d);
+  if(shared[date]?.type==='closed'||facSpec[date]?.type==='closed')return'closed';
+  if(shared[date]?.type==='holiday')return'holiday';
+  const dow=new Date(yr,mo-1,d).getDay();
+  if(dow===0)return'sunday';if(dow===6)return'saturday';return'weekday';
+}
+function generateShifts(ym,staffList,sharedSpec,specK,specT,allPrefs){
+  const[yr,mo]=ym.split('-').map(Number);
+  const dim=new Date(yr,mo,0).getDate();
+  const facSpec={kurashiki:specK||{},tonya:specT||{}};
+  const entries={},alerts=[],workDays={},consec={};
+  staffList.forEach(s=>{workDays[s.id]=0;consec[s.id]={count:0,last:null};});
+  for(let d=1;d<=dim;d++){
+    const date=ds(yr,mo,d);entries[date]=[];
+    if(sharedSpec[date]?.type==='closed'){
+      staffList.forEach(s=>entries[date].push({staffId:s.id,facility:null,shiftCode:'休'}));
+      staffList.forEach(s=>{consec[s.id]={count:0,last:null};});continue;
+    }
+    const dow=new Date(yr,mo-1,d).getDay();
+    const assignedAll=new Set();
+    const isAvail=(s)=>{
+      if(consec[s.id].count>=11)return false;
+      if(s.availableDays&&s.availableDays.length>0&&!s.availableDays.includes(dow))return false;
+      const pref=allPrefs[`${s.id}_${ym}`];
+      if(s.inputMethod==='希望休'){if(pref?.dates?.includes(date))return false;}
+      else{if(pref&&pref.dates&&!pref.dates.includes(date))return false;}
+      return true;
+    };
+    const scoreOf=(s)=>{
+      const step=Math.min(s.step||1,5);const score=step>=5?4:Math.max(0,step-1);
+      const weeks=Math.max(1,Math.ceil(d/7));const exp=s.weeklyMinDays*weeks;
+      return{score,rate:exp>0?workDays[s.id]/exp:1};
+    };
+    FAC_LIST.forEach(fac=>{
+      const dayType=getDayTypeFac(yr,mo,d,sharedSpec,facSpec[fac]);
+      if(dayType==='closed')return;
+      const isEv=sharedSpec[date]?.type==='event'||facSpec[fac][date]?.type==='event';
+      const shifts=getRequiredShifts(fac,dayType);
+      const allShifts=isEv?[...shifts,{code:'用意',role:'event'},{code:'本番',role:'event'}]:shifts;
+      const facAssigned=new Set();
+      allShifts.forEach(({code,role})=>{
+        const cands=staffList.filter(s=>{
+          if(!s.facilities?.includes(fac))return false;
+          if(assignedAll.has(s.id)||facAssigned.has(s.id))return false;
+          if(!isAvail(s))return false;
+          if(role==='cleaning')return s.roles?.includes('cleaning');
+          if(role==='event')return s.roles?.includes('event');
+          return s.roles?.includes('general');
+        });
+        cands.sort((a,b)=>{const sa=scoreOf(a),sb=scoreOf(b);if(sb.score!==sa.score)return sb.score-sa.score;return sa.rate-sb.rate;});
+        if(cands.length===0){
+          const fb=getDayTypeFac(yr,mo,d,sharedSpec,facSpec[fac])==='weekday'?'A1':'遅番';
+          alerts.push({id:Math.random(),type:code==='清掃2'?'cleaning2':'no_staff',date,facility:fac,
+            msg:code==='清掃2'?`${FAC_NAME[fac]} ${date} 清掃2不在→${fb}が代替`:`${FAC_NAME[fac]} ${date} ${code}に配置できるスタッフがいません`});
+          return;
+        }
+        const pick=cands[0];
+        entries[date].push({staffId:pick.id,facility:fac,shiftCode:code});
+        assignedAll.add(pick.id);facAssigned.add(pick.id);workDays[pick.id]++;
+        const prevDate=ds(yr,mo,d-1);
+        if(consec[pick.id].last===prevDate)consec[pick.id].count++;else consec[pick.id].count=1;
+        consec[pick.id].last=date;
+        if(consec[pick.id].count>11)alerts.push({id:Math.random(),type:'consecutive',staffId:pick.id,msg:`${staffList.find(s=>s.id===pick.id)?.name} 連続勤務${consec[pick.id].count}日 (${date})`});
+      });
+    });
+    staffList.forEach(s=>{
+      if(!assignedAll.has(s.id)){
+        const pref=allPrefs[`${s.id}_${ym}`];
+        const isKibou=s.inputMethod==='希望休'&&pref?.dates?.includes(date);
+        entries[date].push({staffId:s.id,facility:null,shiftCode:isKibou?'希':'休'});
+        consec[s.id]={count:0,last:null};
+      }
+    });
+  }
+  staffList.forEach(s=>{
+    if((s.monthlyMinDays||0)>0&&workDays[s.id]<s.monthlyMinDays)
+      alerts.push({id:Math.random(),type:'monthly_min',staffId:s.id,msg:`${s.name} 月出勤日数不足: ${workDays[s.id]}日/最低${s.monthlyMinDays}日`});
+  });
+  return{entries,alerts};
+}
+
+// ── STORAGE（GAS + localStorage ハイブリッド）──
+const GAS_URL_KEY='sv_gas_url';
+function getGasUrl(){return localStorage.getItem(GAS_URL_KEY)||'';}
+function setGasUrl(url){localStorage.setItem(GAS_URL_KEY,url);}
+
+async function gasPost(body){
+  const url=getGasUrl();if(!url)return null;
+  try{const res=await fetch(url,{method:'POST',body:JSON.stringify(body)});return await res.json();}
+  catch(e){console.warn('GAS error:',e);return null;}
+}
+async function gasGet(params){
+  const url=getGasUrl();if(!url)return null;
+  try{const qs=new URLSearchParams(params).toString();const res=await fetch(url+'?'+qs);return await res.json();}
+  catch(e){console.warn('GAS error:',e);return null;}
+}
+async function gasLoadAll(){
+  const r=await gasGet({action:'getAll'});
+  if(!r||!r.ok)return null;
+  return r.data;
+}
+function lsGet(k,fb){try{const r=localStorage.getItem(k);return r?JSON.parse(r):fb;}catch{return fb;}}
+function lsSet(k,v){try{localStorage.setItem(k,JSON.stringify(v));}catch{}}
+async function stLoad(k,fb){return lsGet(k,fb);}
+async function stSave(k,v){
+  lsSet(k,v);
+  const url=getGasUrl();
+  if(url){
+    const by=lsGet('sv_settings',{}).operatorName||'admin';
+    gasPost({action:'set',key:k,value:JSON.stringify(v),updatedBy:by}).catch(()=>{});
+  }
+}
+
+// ── CSV UTILS ──
+function parseCSV(text){
+  const lines=text.trim().split('\n').filter(l=>l.trim());
+  if(lines.length<2)return[];
+  const headers=lines[0].split(',').map(h=>h.trim().replace(/"/g,''));
+  return lines.slice(1).map(line=>{
+    const vals=line.split(',').map(v=>v.trim().replace(/"/g,''));
+    const obj={};headers.forEach((h,i)=>obj[h]=vals[i]||'');return obj;
+  });
+}
+function csvRowToStaff(row){
+  const fMap={'倉敷':'kurashiki','問屋町':'tonya','両施設':['kurashiki','tonya']};
+  const rMap={'一般':'general','清掃':'cleaning','清掃専任':'cleaning','イベント':'event','イベント担当':'event'};
+  const facRaw=row['施設']||row['対応施設']||'倉敷';
+  const facilities=Array.isArray(fMap[facRaw])?fMap[facRaw]:[fMap[facRaw]||'kurashiki'];
+  const roleRaw=row['役割']||'一般';
+  const roles=roleRaw.split('/').map(r=>rMap[r.trim()]).filter(Boolean);
+  return{
+    id:`s_${Date.now()}_${Math.random().toString(36).slice(2,6)}`,
+    name:row['氏名']||row['名前']||'',
+    title:row['肩書']||'',
+    facilities,
+    priorityFacility:facilities[0],
+    roles:roles.length>0?roles:['general'],
+    step:parseInt(row['STEP']||row['ステップ'])||1,
+    weeklyMinDays:parseInt(row['週最低出勤']||row['週最低出勤日数'])||5,
+    monthlyMinDays:parseInt(row['月最低出勤']||row['月最低出勤日数'])||20,
+    availableDays:[0,1,2,3,4,5,6],
+    inputMethod:(row['希望方式']||row['希望入力方式']||'').includes('出勤')?'希望出勤':'希望休',
+    lineId:row['LINE_ID']||row['LINE ID']||row['lineId']||'',
+  };
+}
+
+const today=new Date();
+const nowYM=`${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,'0')}`;
+
+// ── UI PRIMITIVES ──
+function ShiftBadge({code,small}){
+  const bg=SHIFT_BG[code]||'#F3F4F6',cl=SHIFT_FG[code]||'#6B7280';
+  return ce('span',{style:{background:bg,color:cl,padding:small?'1px 4px':'2px 6px',borderRadius:4,fontSize:small?10:11,fontWeight:600,display:'inline-block',whiteSpace:'nowrap'}},code);
+}
+function Btn({onClick,children,variant='default',small,style={},disabled}){
+  const base={border:'1px solid',borderRadius:6,cursor:disabled?'not-allowed':'pointer',fontFamily:'inherit',fontWeight:500,transition:'all .15s',opacity:disabled?0.5:1};
+  const v={
+    default:{...base,background:'var(--color-background-secondary)',borderColor:'var(--color-border-secondary)',color:'var(--color-text-primary)',padding:small?'4px 10px':'6px 14px',fontSize:small?12:13},
+    primary:{...base,background:NAVY,borderColor:NAVY,color:'#fff',padding:small?'4px 10px':'6px 14px',fontSize:small?12:13},
+    success:{...base,background:'#059669',borderColor:'#059669',color:'#fff',padding:small?'4px 10px':'6px 14px',fontSize:small?12:13},
+    warning:{...base,background:'#D97706',borderColor:'#D97706',color:'#fff',padding:small?'4px 10px':'6px 14px',fontSize:small?12:13},
+    danger:{...base,background:'#FEE2E2',borderColor:'#FCA5A5',color:'#B91C1C',padding:small?'4px 10px':'6px 14px',fontSize:small?12:13},
+    ghost:{...base,background:'transparent',border:'none',color:'var(--color-text-secondary)',padding:small?'4px 8px':'6px 12px',fontSize:small?12:13},
+  };
+  return ce('button',{onClick,disabled,style:{...v[variant],...style}},children);
+}
+function Inp({label,value,onChange,type='text',placeholder=''}){
+  return ce('div',{style:{marginBottom:12}},
+    label&&ce('label',{style:{display:'block',fontSize:12,color:'var(--color-text-secondary)',marginBottom:4}},label),
+    ce('input',{type,value,onChange:e=>onChange(e.target.value),placeholder,style:{width:'100%',boxSizing:'border-box',border:'1px solid var(--color-border-secondary)',borderRadius:6,padding:'7px 10px',fontSize:13,background:'var(--color-background-primary)',color:'var(--color-text-primary)',fontFamily:'inherit'}})
+  );
+}
+function Sel({label,value,onChange,options}){
+  return ce('div',{style:{marginBottom:12}},
+    label&&ce('label',{style:{display:'block',fontSize:12,color:'var(--color-text-secondary)',marginBottom:4}},label),
+    ce('select',{value,onChange:e=>onChange(e.target.value),style:{width:'100%',boxSizing:'border-box',border:'1px solid var(--color-border-secondary)',borderRadius:6,padding:'7px 10px',fontSize:13,background:'var(--color-background-primary)',color:'var(--color-text-primary)',fontFamily:'inherit'}},
+      options.map(o=>ce('option',{key:o.value,value:o.value},o.label)))
+  );
+}
+function Modal({title,onClose,children,wide}){
+  return ce('div',{style:{position:'fixed',inset:0,background:'rgba(0,0,0,0.6)',display:'flex',alignItems:'flex-start',justifyContent:'center',zIndex:9999,padding:20,overflowY:'auto'}},
+    ce('div',{style:{background:'#ffffff',borderRadius:12,border:'2px solid #CBD5E1',width:'100%',maxWidth:wide?820:520,marginTop:20,boxShadow:'0 20px 60px rgba(0,0,0,0.4)'}},
+      ce('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'14px 18px',borderBottom:'2px solid #E2E8F0',background:'#F8FAFC',borderRadius:'10px 10px 0 0'}},
+        ce('span',{style:{fontWeight:700,fontSize:15,color:'#0F172A'}},title),
+        ce('button',{onClick:onClose,style:{background:'#E2E8F0',border:'none',fontSize:16,cursor:'pointer',color:'#475569',width:28,height:28,borderRadius:'50%',display:'flex',alignItems:'center',justifyContent:'center',fontWeight:700,lineHeight:1}},'×')
+      ),
+      ce('div',{style:{padding:20,background:'#ffffff',borderRadius:'0 0 10px 10px'}},children)
+    )
+  );
+}
+
+// ── STAFF PAGE ──
+function StaffForm({staff,onSave,onClose}){
+  const def={id:'',name:'',title:'',facilities:['kurashiki'],priorityFacility:'kurashiki',roles:['general'],step:1,weeklyMinDays:5,monthlyMinDays:20,availableDays:[0,1,2,3,4,5,6],inputMethod:'希望休',lineId:''};
+  const[f,setF]=useState(staff||def);
+  const set=(k,v)=>setF(p=>({...p,[k]:v}));
+  const tog=(k,v)=>setF(p=>({...p,[k]:p[k].includes(v)?p[k].filter(x=>x!==v):[...p[k],v]}));
+  return ce(Modal,{title:staff?'スタッフ編集':'スタッフ登録',onClose},
+    ce('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'0 16px'}},
+      ce('div',{style:{gridColumn:'1/-1'}},ce(Inp,{label:'氏名 *',value:f.name,onChange:v=>set('name',v)})),
+      ce('div',{style:{gridColumn:'1/-1'}},ce(Inp,{label:'肩書',value:f.title,onChange:v=>set('title',v),placeholder:'例：マネージャー'})),
+      ce('div',null,ce(Inp,{label:'STEP',type:'number',value:f.step,onChange:v=>set('step',parseInt(v)||1)})),
+      ce('div',null,ce(Inp,{label:'週当たり最低出勤日数',type:'number',value:f.weeklyMinDays,onChange:v=>set('weeklyMinDays',parseInt(v)||0)})),
+      ce('div',null,ce(Inp,{label:'月の最低出勤日数',type:'number',value:f.monthlyMinDays,onChange:v=>set('monthlyMinDays',parseInt(v)||0)})),
+      ce('div',null,ce(Sel,{label:'希望入力方式',value:f.inputMethod,onChange:v=>set('inputMethod',v),options:[{value:'希望休',label:'希望休方式'},{value:'希望出勤',label:'希望出勤方式'}]})),
+      ce('div',{style:{gridColumn:'1/-1'}},ce(Inp,{label:'LINE User ID（エルメから取得）',value:f.lineId,onChange:v=>set('lineId',v),placeholder:'Uxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'})),
+    ),
+    ce('div',{style:{marginBottom:12}},
+      ce('label',{style:{display:'block',fontSize:12,color:'var(--color-text-secondary)',marginBottom:6}},'対応施設'),
+      ce('div',{style:{display:'flex',gap:8}},
+        ['kurashiki','tonya'].map(fid=>ce('label',{key:fid,style:{display:'flex',alignItems:'center',gap:4,fontSize:13,cursor:'pointer'}},
+          ce('input',{type:'checkbox',checked:f.facilities.includes(fid),onChange:()=>tog('facilities',fid)}),FAC_NAME[fid]))
+      )
+    ),
+    f.facilities.length>1&&ce(Sel,{label:'優先施設',value:f.priorityFacility,onChange:v=>set('priorityFacility',v),options:f.facilities.map(fid=>({value:fid,label:FAC_NAME[fid]}))}),
+    ce('div',{style:{marginBottom:12}},
+      ce('label',{style:{display:'block',fontSize:12,color:'var(--color-text-secondary)',marginBottom:6}},'役割（複数選択可）'),
+      ce('div',{style:{display:'flex',gap:8}},
+        ROLES_DEF.map(r=>ce('label',{key:r.id,style:{display:'flex',alignItems:'center',gap:4,fontSize:13,cursor:'pointer'}},
+          ce('input',{type:'checkbox',checked:f.roles.includes(r.id),onChange:()=>tog('roles',r.id)}),r.label))
+      )
+    ),
+    ce('div',{style:{marginBottom:16}},
+      ce('label',{style:{display:'block',fontSize:12,color:'var(--color-text-secondary)',marginBottom:6}},'出勤可能曜日'),
+      ce('div',{style:{display:'flex',gap:6}},
+        DAYS.map((d,i)=>ce('label',{key:i,style:{display:'flex',flexDirection:'column',alignItems:'center',gap:2,fontSize:12,cursor:'pointer',color:i===0?'#EF4444':i===6?'#3B82F6':'inherit'}},
+          ce('input',{type:'checkbox',checked:f.availableDays.includes(i),onChange:()=>tog('availableDays',i)}),d))
+      )
+    ),
+    ce('div',{style:{display:'flex',justifyContent:'flex-end',gap:8}},
+      ce(Btn,{onClick:onClose},'キャンセル'),
+      ce(Btn,{onClick:()=>{if(!f.name.trim()){alert('氏名を入力してください');return;}onSave({...f,id:f.id||`s_${Date.now()}`});},variant:'primary'},'保存')
+    )
+  );
+}
+
+function CSVImportModal({onImport,onClose}){
+  const[mode,setMode]=useState('staff');// staff | lineid
+  const[preview,setPreview]=useState(null);
+  const[linePreview,setLinePreview]=useState(null);
+  const fileRef=useRef();
+
+  const handleFile=(e)=>{
+    const file=e.target.files[0];if(!file)return;
+    const reader=new FileReader();
+    reader.onload=ev=>{
+      const rows=parseCSV(ev.target.result);
+      if(mode==='staff'){
+        const parsed=rows.map(csvRowToStaff).filter(s=>s.name);
+        setPreview(parsed);setLinePreview(null);
+      }else{
+        // LINE ID import: match by name
+        setLinePreview(rows);setPreview(null);
+      }
+    };
+    reader.readAsText(file,'UTF-8');
+  };
+
+  return ce(Modal,{title:'CSVインポート',onClose,wide:true},
+    ce('div',{style:{display:'flex',gap:8,marginBottom:16}},
+      ['staff','lineid'].map(m=>ce(Btn,{key:m,variant:mode===m?'primary':'default',small:true,onClick:()=>{setMode(m);setPreview(null);setLinePreview(null);}},
+        m==='staff'?'スタッフ登録CSV':'LINE ID取込（エルメ）'))
+    ),
+    mode==='staff'&&ce('div',null,
+      ce('div',{style:{background:'#F8FAFC',borderRadius:8,padding:'10px 14px',marginBottom:12,fontSize:12,color:'#374151'}},
+        ce('div',{style:{fontWeight:600,marginBottom:4}},'CSVフォーマット（ヘッダー必須）'),
+        ce('div',{style:{fontFamily:'monospace',fontSize:11,color:'#6B7280'}},'氏名,肩書,施設,役割,STEP,週最低出勤,月最低出勤,希望方式,LINE_ID'),
+        ce('div',{style:{fontFamily:'monospace',fontSize:11,color:'#9CA3AF',marginTop:2}},'施設：倉敷/問屋町/両施設　役割：一般/清掃/イベント（/区切り複数可）　希望方式：希望休/希望出勤')
+      ),
+      ce('input',{ref:fileRef,type:'file',accept:'.csv',onChange:handleFile,style:{marginBottom:12}}),
+      preview&&ce('div',null,
+        ce('div',{style:{fontSize:13,fontWeight:600,marginBottom:8,color:'#374151'}},`${preview.length}件のスタッフをインポートします`),
+        ce('div',{style:{maxHeight:280,overflowY:'auto',border:'1px solid var(--color-border-tertiary)',borderRadius:8,fontSize:12}},
+          ce('table',{style:{width:'100%',borderCollapse:'collapse'}},
+            ce('thead',null,ce('tr',{style:{background:'var(--color-background-secondary)'}},
+              ['氏名','施設','役割','STEP','LINE ID'].map(h=>ce('th',{key:h,style:{padding:'6px 8px',textAlign:'left',fontWeight:500,borderBottom:'1px solid var(--color-border-tertiary)'}},h))
+            )),
+            ce('tbody',null,preview.map((s,i)=>ce('tr',{key:i,style:{borderBottom:'1px solid var(--color-border-tertiary)'}},
+              ce('td',{style:{padding:'5px 8px'}},s.name),
+              ce('td',{style:{padding:'5px 8px'}},s.facilities.map(f=>FAC_NAME[f]).join('・')),
+              ce('td',{style:{padding:'5px 8px'}},s.roles.join('/')),
+              ce('td',{style:{padding:'5px 8px',textAlign:'center'}},'STEP'+s.step),
+              ce('td',{style:{padding:'5px 8px',fontSize:10,color:'#9CA3AF'}},s.lineId?s.lineId.slice(0,12)+'…':'—')
+            )))
+          )
+        ),
+        ce('div',{style:{display:'flex',justifyContent:'flex-end',gap:8,marginTop:12}},
+          ce(Btn,{onClick:onClose},'キャンセル'),
+          ce(Btn,{variant:'primary',onClick:()=>onImport('staff',preview)},'インポート実行')
+        )
+      )
+    ),
+    mode==='lineid'&&ce('div',null,
+      ce('div',{style:{background:'#F8FAFC',borderRadius:8,padding:'10px 14px',marginBottom:12,fontSize:12,color:'#374151'}},
+        ce('div',{style:{fontWeight:600,marginBottom:4}},'エルメCSVフォーマット'),
+        ce('div',{style:{fontFamily:'monospace',fontSize:11,color:'#6B7280'}},'名前,LINE_UID'),
+        ce('div',{style:{fontFamily:'monospace',fontSize:11,color:'#9CA3AF',marginTop:2}},'スタッフ名で既存データと照合してLINE IDを更新します')
+      ),
+      ce('input',{ref:fileRef,type:'file',accept:'.csv',onChange:handleFile,style:{marginBottom:12}}),
+      linePreview&&ce('div',null,
+        ce('div',{style:{fontSize:13,fontWeight:600,marginBottom:8}},'プレビュー（上位5件）'),
+        ce('div',{style:{fontSize:12,color:'#6B7280',marginBottom:8}},linePreview.slice(0,5).map((r,i)=>ce('div',{key:i},`${r['名前']||r['name']||Object.values(r)[0]} → ${r['LINE_UID']||r['LINE ID']||Object.values(r)[1]}`))),
+        ce('div',{style:{display:'flex',justifyContent:'flex-end',gap:8,marginTop:12}},
+          ce(Btn,{onClick:onClose},'キャンセル'),
+          ce(Btn,{variant:'primary',onClick:()=>onImport('lineid',linePreview)},'LINE ID更新')
+        )
+      )
+    )
+  );
+}
+
+function StaffPage({staff,onSave,onDelete,onImport}){
+  const[show,setShow]=useState(false);
+  const[edit,setEdit]=useState(null);
+  const[showCSV,setShowCSV]=useState(false);
+  return ce('div',null,
+    ce('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:16}},
+      ce('h2',{style:{fontSize:18,fontWeight:600,margin:0}},'スタッフ管理'),
+      ce('div',{style:{display:'flex',gap:8}},
+        ce(Btn,{onClick:()=>setShowCSV(true)},'📄 CSV登録'),
+        ce(Btn,{onClick:()=>{setEdit(null);setShow(true);},variant:'primary'},'＋ スタッフ登録')
+      )
+    ),
+    staff.length===0
+      ?ce('div',{style:{padding:40,textAlign:'center',color:'var(--color-text-secondary)',fontSize:14}},'スタッフが登録されていません')
+      :ce('div',{style:{border:'1px solid var(--color-border-tertiary)',borderRadius:8,overflow:'hidden',overflowX:'auto'}},
+        ce('table',{style:{width:'100%',borderCollapse:'collapse',fontSize:13,minWidth:640}},
+          ce('thead',null,
+            ce('tr',{style:{background:'var(--color-background-secondary)'}},
+              ['氏名','肩書','施設','役割','STEP','週/月 最低出勤','入力方式','LINE ID','操作'].map(h=>
+                ce('th',{key:h,style:{padding:'8px 10px',textAlign:'left',fontWeight:500,fontSize:12,color:'var(--color-text-secondary)',borderBottom:'1px solid var(--color-border-tertiary)'}},h)
+              )
+            )
+          ),
+          ce('tbody',null,
+            staff.map((s,i)=>ce('tr',{key:s.id,style:{borderBottom:i<staff.length-1?'1px solid var(--color-border-tertiary)':'none'}},
+              ce('td',{style:{padding:'8px 10px',fontWeight:500}},s.name),
+              ce('td',{style:{padding:'8px 10px',color:'var(--color-text-secondary)'}},s.title||'—'),
+              ce('td',{style:{padding:'8px 10px'}},(s.facilities||[]).map(f=>FAC_NAME[f]).join('・')),
+              ce('td',{style:{padding:'8px 10px'}},(s.roles||[]).map(r=>ROLES_DEF.find(d=>d.id===r)?.label||r).join('、')),
+              ce('td',{style:{padding:'8px 10px',textAlign:'center'}},ce('span',{style:{background:'#DBEAFE',color:'#1D4ED8',padding:'2px 8px',borderRadius:4,fontWeight:600,fontSize:12}},'S'+s.step)),
+              ce('td',{style:{padding:'8px 10px'}},(s.weeklyMinDays||0)+'日/週・'+(s.monthlyMinDays||0)+'日/月'),
+              ce('td',{style:{padding:'8px 10px'}},ce('span',{style:{fontSize:11,background:s.inputMethod==='希望休'?'#FEE2E2':'#EFF6FF',color:s.inputMethod==='希望休'?'#B91C1C':'#1D4ED8',padding:'2px 6px',borderRadius:4}},s.inputMethod)),
+              ce('td',{style:{padding:'8px 10px',fontSize:11,color:'#9CA3AF'}},s.lineId?'✓ 設定済':'—'),
+              ce('td',{style:{padding:'8px 10px'}},
+                ce('div',{style:{display:'flex',gap:4}},
+                  ce(Btn,{small:true,onClick:()=>{setEdit(s);setShow(true);}},'編集'),
+                  ce(Btn,{small:true,variant:'danger',onClick:()=>{if(confirm(`${s.name}を削除しますか？`))onDelete(s.id);}},'削除')
+                )
+              )
+            ))
+          )
+        )
+      ),
+    show&&ce(StaffForm,{staff:edit,onSave:s=>{onSave(s);setShow(false);},onClose:()=>setShow(false)}),
+    showCSV&&ce(CSVImportModal,{onImport:(type,data)=>{onImport(type,data);setShowCSV(false);},onClose:()=>setShowCSV(false)})
+  );
+}
+
+// ── CALENDAR PAGE（施設別）──
+function CalendarPage({ym,setYm,sharedSpec,specK,specT,onSetShared,onSetFac}){
+  const[yr,mo]=ym.split('-').map(Number);
+  const dim=new Date(yr,mo,0).getDate();
+  const first=new Date(yr,mo-1,1).getDay();
+  const[tab,setTab]=useState('shared');// shared | kurashiki | tonya
+  const[selType,setSelType]=useState('holiday');
+
+  const getSpec=()=>{if(tab==='shared')return sharedSpec;if(tab==='kurashiki')return specK;return specT;};
+  const setSpec=tab==='shared'?onSetShared:(d,v)=>onSetFac(tab,d,v);
+  const spec=getSpec();
+
+  const toggle=(d)=>{
+    const date=ds(yr,mo,d);
+    const cur=spec[date];
+    if(cur?.type===selType){setSpec(date,null);}
+    else{setSpec(date,{type:selType});}
+  };
+
+  const prev=()=>mo===1?(setYm(`${yr-1}-12`)):(setYm(`${yr}-${String(mo-1).padStart(2,'0')}`));
+  const next=()=>mo===12?(setYm(`${yr+1}-01`)):(setYm(`${yr}-${String(mo+1).padStart(2,'0')}`));
+
+  const typeOptions=tab==='shared'?[{v:'holiday',l:'🎌 祝日',c:'#B91C1C',bg:'#FEE2E2'},{v:'closed',l:'🔒 全体休業',c:'#6B7280',bg:'#F3F4F6'}]
+    :[{v:'closed',l:'🔒 休業日',c:'#6B7280',bg:'#F3F4F6'},{v:'event',l:'🎪 イベント',c:'#9D174D',bg:'#FCE7F3'}];
+
+  const getCellStyle=(d)=>{
+    const date=ds(yr,mo,d);const dow=new Date(yr,mo-1,d).getDay();
+    const sharedType=sharedSpec[date]?.type;
+    const facType=tab!=='shared'?spec[date]?.type:null;
+    let bg='transparent',color=dow===0?'#EF4444':dow===6?'#3B82F6':'var(--color-text-primary)',border='1px solid transparent',fw=400;
+    const type=facType||sharedType;
+    if(type==='closed'){bg='#F3F4F6';color='#9CA3AF';border='1px solid #D1D5DB';}
+    else if(type==='event'){bg='#FCE7F3';color='#9D174D';border='1px solid #F9A8D4';}
+    else if(type==='holiday'){bg='#FEE2E2';color='#B91C1C';border='1px solid #FECACA';}
+    if(facType&&sharedType&&facType!==sharedType)fw=700;
+    return{background:bg,color,border,fontWeight:fw,borderRadius:8,padding:'8px 4px',textAlign:'center',fontSize:13,cursor:'pointer',transition:'opacity .1s'};
+  };
+
+  return ce('div',null,
+    ce('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:16}},
+      ce('h2',{style:{fontSize:18,fontWeight:600,margin:0}},'カレンダー設定'),
+      ce('div',{style:{display:'flex',alignItems:'center',gap:8}},
+        ce('button',{onClick:prev,style:{padding:'4px 10px',borderRadius:6,border:'1px solid var(--color-border-secondary)',background:'transparent',cursor:'pointer'}},'◀'),
+        ce('span',{style:{fontSize:15,fontWeight:600,minWidth:90,textAlign:'center'}},`${yr}年${mo}月`),
+        ce('button',{onClick:next,style:{padding:'4px 10px',borderRadius:6,border:'1px solid var(--color-border-secondary)',background:'transparent',cursor:'pointer'}},'▶')
+      )
+    ),
+    ce('div',{style:{display:'flex',gap:6,marginBottom:16}},
+      [{id:'shared',label:'共通（祝日）'},{id:'kurashiki',label:'🏢 倉敷'},{id:'tonya',label:'🏢 問屋町'}].map(t=>
+        ce('button',{key:t.id,onClick:()=>{setTab(t.id);setSelType(t.id==='shared'?'holiday':'closed');},
+          style:{padding:'6px 14px',borderRadius:8,border:'none',cursor:'pointer',fontFamily:'inherit',fontSize:13,fontWeight:tab===t.id?600:400,
+            background:tab===t.id?NAVY:'var(--color-background-secondary)',color:tab===t.id?'#fff':'var(--color-text-primary)'}},t.label)
+      )
+    ),
+    ce('div',{style:{display:'flex',gap:8,marginBottom:14}},
+      typeOptions.map(o=>ce('button',{key:o.v,onClick:()=>setSelType(o.v),
+        style:{padding:'5px 12px',borderRadius:6,border:`1px solid ${o.c}`,cursor:'pointer',fontFamily:'inherit',fontSize:12,fontWeight:selType===o.v?600:400,
+          background:selType===o.v?o.bg:'transparent',color:o.c}},o.l))
+    ),
+    ce('div',{style:{border:'1px solid var(--color-border-tertiary)',borderRadius:10,padding:16,marginBottom:14}},
+      ce('div',{style:{display:'grid',gridTemplateColumns:'repeat(7,1fr)',gap:3,marginBottom:6}},
+        DAYS.map((d,i)=>ce('div',{key:d,style:{textAlign:'center',fontSize:12,fontWeight:600,padding:'4px 0',color:i===0?'#EF4444':i===6?'#3B82F6':'var(--color-text-secondary)'}},d))
+      ),
+      ce('div',{style:{display:'grid',gridTemplateColumns:'repeat(7,1fr)',gap:3}},
+        Array.from({length:first}).map((_,i)=>ce('div',{key:'e'+i})),
+        Array.from({length:dim},(_,i)=>{
+          const d=i+1,date=ds(yr,mo,d);
+          const cs=getCellStyle(d);
+          const hasSharedMark=tab!=='shared'&&sharedSpec[date];
+          return ce('div',{key:d,onClick:()=>toggle(d),style:cs,
+            onMouseEnter:e=>e.currentTarget.style.opacity='0.7',
+            onMouseLeave:e=>e.currentTarget.style.opacity='1'},
+            d,
+            hasSharedMark&&ce('span',{style:{position:'absolute',top:1,right:2,width:5,height:5,borderRadius:'50%',background:'#F59E0B',display:'inline-block',marginLeft:2,fontSize:8}},'')
+          );
+        })
+      )
+    ),
+    tab==='shared'&&ce('p',{style:{fontSize:12,color:'var(--color-text-secondary)',textAlign:'center'}},'クリックで祝日/全体休業を設定'),
+    tab!=='shared'&&ce('p',{style:{fontSize:12,color:'var(--color-text-secondary)',textAlign:'center'}},`クリックで${FAC_NAME[tab]}の休業日/イベント日を設定（共通祝日は共通タブで設定）`)
+  );
+}
+
+// ── TIMELINE PDF EXPORT ──
+function exportTimelinePDF(ym, staff, shiftData, sharedSpec, specK, specT, selFac){
+  if(!shiftData?.entries){alert('シフトがまだ生成されていません');return;}
+  const[yr,mo]=ym.split('-').map(Number);
+  const dim=new Date(yr,mo,0).getDate();
+  const facSpec={kurashiki:specK||{},tonya:specT||{}};
+  const entries=shiftData.entries;
+  const dowJP=['日','月','火','水','木','金','土'];
+  const getName=id=>staff.find(s=>s.id===id)?.name||'?';
+  const showFacs=selFac==='both'?['kurashiki','tonya']:selFac==='kurashiki'?['kurashiki']:['tonya'];
+
+  // ガントバー色
+  const GCOL={
+    'A1':'#93C5FD','早番':'#6EE7B7','遅番':'#C4B5FD',
+    '清掃1':'#FDE68A','清掃2':'#FCA5A5','用意':'#F9A8D4','本番':'#F87171'
+  };
+  // 横軸: 7〜25時（18h）
+  const GSTART=7,GEND=25,GSPAN=18;
+  const pct=h=>((h-GSTART)/GSPAN*100).toFixed(2)+'%';
+  const wPct=(s,e)=>((e-s)/GSPAN*100).toFixed(2)+'%';
+
+  const getHoursLocal=(code,fac)=>{
+    const map={
+      'A1':     {kurashiki:[19,24],tonya:[19,22]},
+      '早番':    {both:[10,19]},
+      '遅番':    {kurashiki:[19,24],tonya:[19,22]},
+      '清掃1':   {kurashiki:[8.5,11.5],tonya:[10,13]},
+      '清掃2':   {kurashiki:[22,24.5],tonya:[22,24]},
+      '用意':    {both:[7.5,24.5]},
+      '本番':    {both:[18,22]},
+    };
+    const h=map[code];if(!h)return null;
+    return h.both||h[fac]||null;
+  };
+  const fmt=h=>`${Math.floor(h)}:${String(Math.round((h%1)*60)).padStart(2,'0')}`;
+
+  // 時刻ヘッダHTML（7〜25）
+  let timeHeader='';
+  for(let h=GSTART;h<=GEND;h++){
+    const l=h>=24?`${h-24}:00`:`${h}:00`;
+    const lp=pct(h);
+    timeHeader+=`<div class="th" style="left:${lp}">${l}</div>`;
+  }
+  // グリッド縦線HTML
+  let gridLines='';
+  for(let h=GSTART+1;h<GEND;h++) gridLines+=`<div class="gl" style="left:${pct(h)}"></div>`;
+
+  // 全日の行HTML
+  let rowsHtml='';
+  for(let d=1;d<=dim;d++){
+    const date=ds(yr,mo,d);
+    const dow=new Date(yr,mo-1,d).getDay();
+    const isHol=sharedSpec[date]?.type==='holiday';
+    const isAllClosed=sharedSpec[date]?.type==='closed';
+    const isSun=dow===0; const isSat=dow===6;
+    const dayEnt=entries[date]||[];
+    const dayLabel=`${mo}/${d}`;
+    const dowLabel=dowJP[dow]+(isHol?'祝':'');
+    const dayColor=isSun||isHol?'#DC2626':isSat?'#2563EB':'#374151';
+    const rowBgDay=isSun||isHol?'#FFF0F0':isSat?'#F0F4FF':'#FFFFFF';
+
+    // 施設ごとの行を生成
+    showFacs.forEach(fac=>{
+      const isFacClosed=facSpec[fac][date]?.type==='closed';
+      const facEntries=dayEnt.filter(e=>e.facility===fac);
+      const facLabel=fac==='kurashiki'?'倉':'問';
+      const facColor=fac==='kurashiki'?'#1D4ED8':'#7C3AED';
+      const facBg=fac==='kurashiki'?'#DBEAFE':'#EDE9FE';
+
+      if(isAllClosed||isFacClosed){
+        rowsHtml+=`
+          <div class="row" style="background:${rowBgDay}">
+            <div class="cell-day" style="color:${dayColor}">${dayLabel}<br><span class="dow-lbl">${dowLabel}</span></div>
+            <div class="cell-fac"><span class="fac-badge" style="color:${facColor};background:${facBg}">${facLabel}</span></div>
+            <div class="cell-name" style="color:#9CA3AF">休業日</div>
+            <div class="cell-gantt"></div>
+          </div>`;
+        return;
+      }
+
+      if(facEntries.length===0){
+        rowsHtml+=`
+          <div class="row" style="background:${rowBgDay}">
+            <div class="cell-day" style="color:${dayColor}">${dayLabel}<br><span class="dow-lbl">${dowLabel}</span></div>
+            <div class="cell-fac"><span class="fac-badge" style="color:${facColor};background:${facBg}">${facLabel}</span></div>
+            <div class="cell-name" style="color:#D1D5DB">—</div>
+            <div class="cell-gantt">${gridLines}</div>
+          </div>`;
+        return;
+      }
+
+      facEntries.forEach((e,ei)=>{
+        const hrs=getHoursLocal(e.shiftCode,fac);
+        const barHtml=hrs?`
+          <div class="bar" style="left:${pct(hrs[0])};width:${wPct(hrs[0],hrs[1])};background:${GCOL[e.shiftCode]||'#CBD5E1'}">
+            <span class="bar-label">${e.shiftCode}</span>
+          </div>`:'';
+        rowsHtml+=`
+          <div class="row" style="background:${rowBgDay}">
+            ${ei===0?`<div class="cell-day" style="color:${dayColor}">${dayLabel}<br><span class="dow-lbl">${dowLabel}</span>`
+                    :`<div class="cell-day" style="color:${dayColor}">`}
+            </div>
+            <div class="cell-fac"><span class="fac-badge" style="color:${facColor};background:${facBg}">${facLabel}</span></div>
+            <div class="cell-name">${getName(e.staffId)}</div>
+            <div class="cell-gantt">${gridLines}${barHtml}</div>
+          </div>`;
+      });
+    });
+  }
+
+  const facTitle=selFac==='both'?'両施設':selFac==='kurashiki'?'倉敷':'問屋町';
+
+  const html=`<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<title>タイムライン ${yr}年${mo}月</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0;}
+  body{font-family:'Hiragino Kaku Gothic ProN','Meiryo','Yu Gothic',sans-serif;font-size:9px;background:#fff;color:#1a1a1a;padding:5mm;}
+  @page{size:A4 landscape;margin:7mm 5mm;}
+  @media print{body{padding:0;}-webkit-print-color-adjust:exact;print-color-adjust:exact;}
+
+  .page-header{display:flex;justify-content:space-between;align-items:flex-end;margin-bottom:4mm;padding-bottom:2mm;border-bottom:2px solid #0F2D52;}
+  .title{font-size:14px;font-weight:700;color:#0F2D52;}
+  .subtitle{font-size:9px;color:#6B7280;margin-top:2px;}
+  .meta{font-size:7px;color:#9CA3AF;text-align:right;}
+
+  .gantt-wrap{font-size:8px;}
+
+  /* 列幅定義 */
+  .row{display:flex;align-items:stretch;border-bottom:0.3px solid #E5E7EB;min-height:18px;}
+  .row:nth-child(even){background-blend-mode:multiply;}
+  .cell-day{width:11mm;flex-shrink:0;display:flex;flex-direction:column;justify-content:center;align-items:center;font-weight:700;font-size:8px;border-right:0.5px solid #E5E7EB;padding:1px 0;line-height:1.3;}
+  .dow-lbl{font-size:6.5px;font-weight:400;}
+  .cell-fac{width:6mm;flex-shrink:0;display:flex;align-items:center;justify-content:center;border-right:0.5px solid #E5E7EB;}
+  .fac-badge{font-size:7px;font-weight:700;padding:1px 2px;border-radius:2px;}
+  .cell-name{width:16mm;flex-shrink:0;display:flex;align-items:center;padding:0 2px;font-size:8px;font-weight:600;border-right:0.5px solid #E5E7EB;overflow:hidden;white-space:nowrap;}
+  .cell-gantt{flex:1;position:relative;overflow:hidden;}
+
+  /* グリッド縦線 */
+  .gl{position:absolute;top:0;bottom:0;border-left:0.3px solid #F1F5F9;}
+  /* 時刻ヘッダ */
+  .time-header{display:flex;margin-bottom:1mm;padding-left:${11+6+16}mm;position:relative;height:8px;}
+  .th{position:absolute;font-size:6.5px;color:#64748B;transform:translateX(-50%);white-space:nowrap;}
+  /* ガントバー */
+  .bar{position:absolute;top:2px;bottom:2px;border-radius:3px;display:flex;align-items:center;padding-left:2px;min-width:4px;}
+  .bar-label{font-size:6.5px;font-weight:700;color:#1E293B;white-space:nowrap;overflow:hidden;}
+
+  /* 凡例 */
+  .legend{display:flex;flex-wrap:wrap;gap:4mm;margin-top:3mm;padding-top:2mm;border-top:0.5px solid #E5E7EB;}
+  .legend-item{display:flex;align-items:center;gap:2mm;font-size:7px;}
+  .legend-box{width:14px;height:8px;border-radius:2px;flex-shrink:0;}
+
+  .print-btn{position:fixed;bottom:14px;right:14px;background:#0F2D52;color:#fff;border:none;padding:9px 18px;border-radius:8px;font-size:13px;font-family:inherit;cursor:pointer;box-shadow:0 4px 12px rgba(0,0,0,0.2);z-index:999;}
+  .print-btn:hover{background:#1e4080;}
+  @media print{.print-btn{display:none;}}
+</style>
+</head>
+<body>
+<button class="print-btn" onclick="window.print()">🖨️ 印刷 / PDF保存</button>
+
+<div class="page-header">
+  <div>
+    <div class="title">スタジオバース　タイムライン（${facTitle}）</div>
+    <div class="subtitle">${yr}年${mo}月　横軸：${GSTART}:00 〜 ${GEND>=24?GEND-24+':00翌日':GEND+':00'}</div>
+  </div>
+  <div class="meta">出力：${new Date().toLocaleDateString('ja-JP',{year:'numeric',month:'long',day:'numeric'})}</div>
+</div>
+
+<div class="gantt-wrap">
+  <div class="time-header" style="padding-left:${11+6+16}mm">${timeHeader}</div>
+  ${rowsHtml}
+</div>
+
+<div class="legend">
+  ${Object.entries(GCOL).map(([code,color])=>`
+    <div class="legend-item">
+      <div class="legend-box" style="background:${color}"></div>
+      <span>${code}</span>
+    </div>`).join('')}
+  <div class="legend-item"><div class="legend-box" style="background:#FFF0F0;border:1px solid #FCA5A5"></div><span>日曜・祝日</span></div>
+  <div class="legend-item"><div class="legend-box" style="background:#F0F4FF;border:1px solid #93C5FD"></div><span>土曜</span></div>
+</div>
+
+<script>window.onload=function(){setTimeout(function(){window.print();},500);};<\/script>
+</body>
+</html>`;
+
+  const w=window.open('','_blank','width=1100,height=800');
+  if(!w){alert('ポップアップがブロックされています。ブラウザのアドレスバーで許可してください。');return;}
+  w.document.write(html);
+  w.document.close();
+}
+
+// ── TIMELINE HELPERS ──
+function hToStr(h){const hh=Math.floor(h)%24;const mm=Math.round((h%1)*60);return`${String(hh).padStart(2,'0')}:${String(mm).padStart(2,'0')}`;}
+function strToH(s){const[hh,mm]=(s||'').split(':').map(Number);if(isNaN(hh))return null;return hh+(mm||0)/60;}
+function toDisplay(h){return h>=24?`翌${hToStr(h-24)}`:hToStr(h);}
+
+const GANTT_START=7,GANTT_END=25,GANTT_SPAN=18;
+function pct(h){return((h-GANTT_START)/GANTT_SPAN*100).toFixed(3);}
+
+// シフト時間定義（小数時）
+const SHIFT_HOURS={
+  'A1':    {kurashiki:[19,24],   tonya:[19,22]},
+  '早番':   {both:[10,19]},
+  '遅番':   {kurashiki:[19,24],   tonya:[19,22]},
+  '清掃1':  {kurashiki:[8.5,11.5],tonya:[10,13]},
+  '清掃2':  {kurashiki:[22,24.5], tonya:[22,24]},
+  '用意':   {both:[7.5,24.5]},
+  '本番':   {both:[18,22]},
+};
+function getHours(code,fac){const h=SHIFT_HOURS[code];if(!h)return null;return h.both||h[fac]||null;}
+
+// ガントバー色
+const GANTT_COLORS={
+  'A1':'#93C5FD','早番':'#6EE7B7','遅番':'#C4B5FD',
+  '清掃1':'#FDE68A','清掃2':'#FCA5A5','用意':'#F9A8D4','本番':'#F87171',
+};
+
+// ── TIMELINE EDIT MODAL ──
+function TimelineEditModal({date,fac,entry,entryIdx,staff,shiftData,onSave,onDelete,onClose}){
+  const facStaff=staff.filter(s=>s.facilities?.includes(fac));
+  const[code,setCode]=useState(entry?.shiftCode||'A1');
+  const[staffId,setStaffId]=useState(entry?.staffId||'');
+  const defaultHrs=(()=>{if(entry?.customHours)return entry.customHours;const h=SHIFT_HOURS[entry?.shiftCode||'A1'];if(!h)return[9,18];return(h.both||h[fac]||[9,18]);})();
+  const[startStr,setStartStr]=useState(hToStr(defaultHrs[0]));
+  const[endStr,setEndStr]=useState(hToStr(defaultHrs[1]>24?defaultHrs[1]-24:defaultHrs[1]));
+  const[endNext,setEndNext]=useState(defaultHrs[1]>=24);
+  const changeCode=c=>{setCode(c);const h=SHIFT_HOURS[c];if(h){const hrs=h.both||h[fac]||null;if(hrs){setStartStr(hToStr(hrs[0]));setEndNext(hrs[1]>=24);setEndStr(hToStr(hrs[1]>=24?hrs[1]-24:hrs[1]));}}};
+  const getStartH=()=>strToH(startStr)||0;
+  const getEndH=()=>{const h=strToH(endStr)||0;return endNext?h+24:h;};
+  const duration=()=>{const d=getEndH()-getStartH();if(d<=0)return'—';const h=Math.floor(d);const m=Math.round((d%1)*60);return m>0?`${h}時間${m}分`:`${h}時間`;};
+  const dow=new Date(date).getDay();
+  const dayLabel=`${date.slice(5).replace('-','/')}（${'日月火水木金土'[dow]}）`;
+  const facLabel=fac==='kurashiki'?'倉敷':'問屋町';
+  const save=()=>{const sH=getStartH(),eH=getEndH();if(eH<=sH){alert('終了時間は開始より後にしてください');return;}if(!staffId&&code!=='休'&&code!=='希'&&code!=='有'){alert('スタッフを選択してください');return;}onSave({shiftCode:code,staffId,facility:fac,customHours:[sH,eH]});};
+  return ce(Modal,{title:`タイムライン編集 ─ ${facLabel} ${dayLabel}`,onClose,wide:true},
+    ce('div',{style:{marginBottom:14}},
+      ce('label',{style:{display:'block',fontSize:11,color:'#6B7280',marginBottom:7,fontWeight:700}},'シフト種別'),
+      ce('div',{style:{display:'flex',flexWrap:'wrap',gap:6}},
+        SHIFT_CODES.map(c=>ce('button',{key:c,onClick:()=>changeCode(c),
+          style:{padding:'6px 10px',borderRadius:7,border:`1.5px solid ${code===c?(SHIFT_FG[c]||'#1D4ED8'):'#E2E8F0'}`,
+            background:code===c?(SHIFT_BG[c]||'#DBEAFE'):'transparent',
+            color:code===c?(SHIFT_FG[c]||'#1D4ED8'):'#374151',
+            fontSize:12,fontWeight:code===c?700:400,cursor:'pointer',fontFamily:'inherit'}},c))
+      )
+    ),
+    ce('div',{style:{marginBottom:14}},
+      ce('label',{style:{display:'block',fontSize:11,color:'#6B7280',marginBottom:7,fontWeight:700}},'担当スタッフ'),
+      ce('select',{value:staffId,onChange:e=>setStaffId(e.target.value),style:{width:'100%',border:'1.5px solid #E2E8F0',borderRadius:8,padding:'9px 10px',fontSize:13,background:'#fff',fontFamily:'inherit'}},
+        ce('option',{value:''},'─ 未割当 ─'),
+        facStaff.map(s=>ce('option',{key:s.id,value:s.id},`${s.name}（STEP${s.step}）`))
+      )
+    ),
+    ce('div',{style:{marginBottom:14}},
+      ce('label',{style:{display:'block',fontSize:11,color:'#6B7280',marginBottom:8,fontWeight:700}},'勤務時間'),
+      ce('div',{style:{display:'flex',gap:10,alignItems:'center',flexWrap:'wrap'}},
+        ce('div',null,ce('div',{style:{fontSize:10,color:'#9CA3AF',marginBottom:3}},'開始'),
+          ce('input',{type:'time',value:startStr,onChange:e=>setStartStr(e.target.value),style:{border:'1.5px solid #BFDBFE',borderRadius:7,padding:'7px 10px',fontSize:14,fontFamily:'inherit',fontWeight:700,color:'#1D4ED8',background:'#EFF6FF'}})),
+        ce('span',{style:{fontSize:16,color:'#CBD5E1',marginTop:14}},'→'),
+        ce('div',null,ce('div',{style:{fontSize:10,color:'#9CA3AF',marginBottom:3}},'終了'),
+          ce('div',{style:{display:'flex',alignItems:'center',gap:6}},
+            ce('input',{type:'time',value:endStr,onChange:e=>setEndStr(e.target.value),style:{border:'1.5px solid #DDD6FE',borderRadius:7,padding:'7px 10px',fontSize:14,fontFamily:'inherit',fontWeight:700,color:'#7C3AED',background:'#F5F3FF'}}),
+            ce('label',{style:{fontSize:12,cursor:'pointer',color:'#6B7280',display:'flex',alignItems:'center',gap:4,whiteSpace:'nowrap'}},
+              ce('input',{type:'checkbox',checked:endNext,onChange:e=>setEndNext(e.target.checked)}),'翌日')
+          )
+        ),
+        ce('div',{style:{background:'#F8FAFC',borderRadius:8,padding:'7px 12px',marginTop:14}},
+          ce('div',{style:{fontSize:9,color:'#9CA3AF',marginBottom:1}},'勤務時間'),
+          ce('div',{style:{fontSize:14,fontWeight:700,color:'#374151'}},duration())
+        )
+      ),
+      ce('div',{style:{marginTop:10,height:18,background:'#F1F5F9',borderRadius:5,position:'relative',overflow:'hidden'}},
+        (()=>{const sH=getStartH(),eH=getEndH();const l=Math.max(0,(sH-GANTT_START)/GANTT_SPAN*100);const w=Math.min(100-l,(eH-sH)/GANTT_SPAN*100);if(w<=0)return null;return ce('div',{style:{position:'absolute',left:`${l.toFixed(1)}%`,width:`${w.toFixed(1)}%`,top:2,bottom:2,background:GANTT_COLORS[code]||'#CBD5E1',borderRadius:3,display:'flex',alignItems:'center',justifyContent:'center'}},ce('span',{style:{fontSize:8,fontWeight:700,color:'#1E293B',whiteSpace:'nowrap'}},`${toDisplay(sH)}〜${toDisplay(eH)}`));})()
+      )
+    ),
+    ce('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',paddingTop:8,borderTop:'1px solid #F1F5F9'}},
+      entry?ce(Btn,{variant:'danger',onClick:()=>{if(confirm('削除しますか？'))onDelete();}},'🗑 削除'):ce('span',null),
+      ce('div',{style:{display:'flex',gap:8}},ce(Btn,{onClick:onClose},'キャンセル'),ce(Btn,{variant:'primary',onClick:save},'✓ 保存'))
+    )
+  );
+}
+
+// ── TIMELINE (生HTML方式・高速) ──
+
+function TimelinePage({ym,setYm,staff,shiftData,sharedSpec,specK,specT,onSaveShifts}){
+  const[yr,mo]=ym.split('-').map(Number);
+  const dim=new Date(yr,mo,0).getDate();
+  const facSpec=useMemo(()=>({kurashiki:specK||{},tonya:specT||{}}),[specK,specT]);
+  const[selFac,setSelFac]=useState('both');
+  const[editTarget,setEditTarget]=useState(null);
+  const confirmed=shiftData?._confirmed||false;
+
+  const prev=()=>mo===1?(setYm(`${yr-1}-12`)):(setYm(`${yr}-${String(mo-1).padStart(2,'0')}`));
+  const next=()=>mo===12?(setYm(`${yr+1}-01`)):(setYm(`${yr}-${String(mo+1).padStart(2,'0')}`));
+
+  // ── ガントHTML文字列をメモ化（Reactのdiff対象から外す）──
+  const ganttHtml=useMemo(()=>{
+    const showFacs=selFac==='both'?['kurashiki','tonya']:selFac==='kurashiki'?['kurashiki']:['tonya'];
+    const getName=id=>staff.find(s=>s.id===id)?.name||'?';
+    let html='';
+    for(let d=1;d<=dim;d++){
+      const date=ds(yr,mo,d);
+      const dow=new Date(yr,mo-1,d).getDay();
+      const isHol=sharedSpec[date]?.type==='holiday';
+      const isAllClosed=sharedSpec[date]?.type==='closed';
+      const isSun=dow===0,isSat=dow===6;
+      const dayBg=isSun||isHol?'#FFF0F0':isSat?'#F0F4FF':'#fff';
+      const dayColor=isSun||isHol?'#DC2626':isSat?'#2563EB':'#374151';
+      const dayEntries=(shiftData?.entries?.[date]||[]);
+      const dowStr=DAYS[dow]+(isHol?'祝':'');
+
+      // 施設ごとの行
+      const rowsHtml=showFacs.map(fac=>{
+        const isFacClosed=facSpec[fac][date]?.type==='closed';
+        const facEntries=dayEntries.map((e,idx)=>({...e,_idx:idx})).filter(e=>e.facility===fac);
+        const facColor=fac==='kurashiki'?'#1D4ED8':'#7C3AED';
+        const facBg=fac==='kurashiki'?'#DBEAFE':'#EDE9FE';
+        const facBadge=`<span style="font-size:8px;font-weight:700;color:${facColor};background:${facBg};border-radius:3px;padding:1px 3px;">${fac==='kurashiki'?'倉':'問'}</span>`;
+
+        if(isAllClosed||isFacClosed){
+          return `<div style="display:flex;height:26px;border-bottom:1px solid #F1F5F9;background:${dayBg}">
+            <div style="width:24px;display:flex;align-items:center;justify-content:center;border-right:1px solid #E2E8F0;flex-shrink:0;">${facBadge}</div>
+            <div style="width:58px;display:flex;align-items:center;padding:0 4px;border-right:1px solid #E2E8F0;flex-shrink:0;font-size:10px;color:#9CA3AF;">休業</div>
+            <div style="flex:1;background:${dayBg};"></div>
+          </div>`;
+        }
+
+        if(facEntries.length===0){
+          const addBtn=!confirmed?`<button data-add="${JSON.stringify({date,fac}).replace(/"/g,'&quot;')}" style="width:15px;height:15px;border-radius:50%;border:1px solid #CBD5E1;background:#F8FAFC;cursor:pointer;font-size:11px;color:#9CA3AF;flex-shrink:0;padding:0;line-height:1;">+</button>`:'';
+          return `<div style="display:flex;height:26px;border-bottom:1px solid #F1F5F9;background:${dayBg}">
+            <div style="width:24px;display:flex;align-items:center;justify-content:center;border-right:1px solid #E2E8F0;flex-shrink:0;">${facBadge}</div>
+            <div style="width:58px;display:flex;align-items:center;justify-content:space-between;padding:0 3px 0 4px;border-right:1px solid #E2E8F0;flex-shrink:0;gap:2px;overflow:hidden;">
+              <span style="font-size:10px;color:#D1D5DB;overflow:hidden;white-space:nowrap;flex:1;">—</span>${addBtn}</div>
+            <div style="flex:1;background:${dayBg};"></div>
+          </div>`;
+        }
+
+        return facEntries.map(e=>{
+          const hrs=e.customHours||getHours(e.shiftCode,fac);
+          const name=getName(e.staffId);
+          const editBtn=!confirmed?`<button data-edit="${JSON.stringify({date,fac,entryIdx:e._idx}).replace(/"/g,'&quot;')}" style="width:15px;height:15px;border-radius:3px;border:1px solid #CBD5E1;background:#F8FAFC;cursor:pointer;font-size:8px;color:#6B7280;flex-shrink:0;padding:0;">✎</button>`:'';
+          let barHtml='';
+          if(hrs){
+            const l=pct(hrs[0]);
+            const w=((hrs[1]-hrs[0])/GANTT_SPAN*100).toFixed(3);
+            const color=GANTT_COLORS[e.shiftCode]||'#CBD5E1';
+            const shadow=e.customHours?'box-shadow:0 0 0 2px #F59E0B inset;':'';
+            barHtml=`<div data-edit="${JSON.stringify({date,fac,entryIdx:e._idx}).replace(/"/g,'&quot;')}"
+              style="position:absolute;left:${l}%;width:${w}%;top:4px;bottom:4px;
+                background:${color};border-radius:4px;${shadow}
+                display:flex;align-items:center;padding-left:4px;cursor:${confirmed?'default':'pointer'};">
+              <span style="font-size:9px;font-weight:700;color:#1E293B;white-space:nowrap;overflow:hidden;pointer-events:none;">${e.shiftCode}</span>
+            </div>`;
+          }
+          return `<div style="display:flex;height:26px;border-bottom:1px solid #F1F5F9;background:${dayBg}">
+            <div style="width:24px;display:flex;align-items:center;justify-content:center;border-right:1px solid #E2E8F0;flex-shrink:0;">${facBadge}</div>
+            <div style="width:58px;display:flex;align-items:center;justify-content:space-between;padding:0 3px 0 4px;border-right:1px solid #E2E8F0;flex-shrink:0;gap:2px;overflow:hidden;">
+              <span style="font-size:10px;font-weight:600;color:#374151;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1;">${name}</span>${editBtn}</div>
+            <div style="flex:1;position:relative;overflow:hidden;background:inherit;">${barHtml}</div>
+          </div>`;
+        }).join('');
+      }).join('');
+
+      html+=`<div style="display:flex;border-bottom:1px solid #E5E7EB;">
+        <div style="width:46px;flex-shrink:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+          background:${dayBg};border-right:1px solid #E2E8F0;padding:2px 0;min-height:${showFacs.length*26}px;">
+          <span style="font-size:11px;font-weight:700;color:${dayColor};line-height:1.2;">${mo}/${d}</span>
+          <span style="font-size:8px;color:${dayColor};line-height:1.3;">${dowStr}</span>
+        </div>
+        <div style="flex:1;display:flex;flex-direction:column;">${rowsHtml}</div>
+      </div>`;
+    }
+    return html;
+  },[dim,yr,mo,selFac,shiftData,sharedSpec,facSpec,staff,confirmed]);
+
+  // クリックはイベント委譲で処理
+  const handleGanttClick=useCallback(e=>{
+    if(confirmed)return;
+    const editEl=e.target.closest('[data-edit]');
+    const addEl=e.target.closest('[data-add]');
+    if(editEl){
+      try{
+        const{date,fac,entryIdx}=JSON.parse(editEl.dataset.edit.replace(/&quot;/g,'"'));
+        const dayArr=shiftData?.entries?.[date]||[];
+        const entry=entryIdx!=null?dayArr[entryIdx]:null;
+        setEditTarget({date,fac,entryIdx,entry});
+      }catch{}
+    }else if(addEl){
+      try{
+        const{date,fac}=JSON.parse(addEl.dataset.add.replace(/&quot;/g,'"'));
+        setEditTarget({date,fac,entryIdx:null,entry:null});
+      }catch{}
+    }
+  },[confirmed,shiftData]);
+
+  const saveEdit=useCallback(async(newEntry)=>{
+    if(!editTarget||!onSaveShifts)return;
+    const{date,fac,entryIdx}=editTarget;
+    const allEntries={...(shiftData?.entries||{})};
+    const dayArr=[...(allEntries[date]||[])];
+    if(entryIdx!=null&&entryIdx>=0) dayArr[entryIdx]={...dayArr[entryIdx],...newEntry,facility:fac};
+    else dayArr.push({...newEntry,facility:fac});
+    allEntries[date]=dayArr;
+    await onSaveShifts(ym,{...shiftData,entries:allEntries,_confirmed:false});
+    setEditTarget(null);
+  },[editTarget,shiftData,onSaveShifts,ym]);
+
+  const deleteEdit=useCallback(async()=>{
+    if(!editTarget||!onSaveShifts)return;
+    const{date,fac,entryIdx}=editTarget;
+    const allEntries={...(shiftData?.entries||{})};
+    const dayArr=[...(allEntries[date]||[])];
+    if(entryIdx!=null&&entryIdx>=0) dayArr.splice(entryIdx,1);
+    allEntries[date]=dayArr;
+    await onSaveShifts(ym,{...shiftData,entries:allEntries,_confirmed:false});
+    setEditTarget(null);
+  },[editTarget,shiftData,onSaveShifts,ym]);
+
+  // 時刻ヘッダ
+  const hourTicks=useMemo(()=>{
+    const ticks=[];
+    for(let h=GANTT_START;h<=GANTT_END;h++) ticks.push(h);
+    return ticks;
+  },[]);
+
+  return ce('div',null,
+    ce('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10,flexWrap:'wrap',gap:8}},
+      ce('div',{style:{display:'flex',alignItems:'center',gap:10}},
+        ce('h2',{style:{fontSize:18,fontWeight:600,margin:0}},'タイムライン'),
+        confirmed&&ce('span',{style:{background:'#DCFCE7',color:'#166534',fontSize:11,fontWeight:700,padding:'2px 10px',borderRadius:10,border:'1px solid #86EFAC'}},'✓ 確定済'),
+        !confirmed&&shiftData?.entries&&ce('span',{style:{fontSize:11,color:'#94A3B8'}},'バー / ✎ をクリックして編集')
+      ),
+      ce('div',{style:{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}},
+        ce('div',{style:{display:'flex',gap:4}},
+          [{v:'both',l:'両施設'},{v:'kurashiki',l:'倉敷'},{v:'tonya',l:'問屋町'}].map(o=>
+            ce('button',{key:o.v,onClick:()=>setSelFac(o.v),
+              style:{padding:'4px 10px',borderRadius:6,border:'none',cursor:'pointer',fontFamily:'inherit',fontSize:12,
+                fontWeight:selFac===o.v?600:400,background:selFac===o.v?NAVY:'var(--color-background-secondary)',
+                color:selFac===o.v?'#fff':'var(--color-text-primary)'}},o.l))
+        ),
+        ce('button',{onClick:prev,style:{padding:'4px 10px',borderRadius:6,border:'1px solid var(--color-border-secondary)',background:'transparent',cursor:'pointer'}},'◀'),
+        ce('span',{style:{fontSize:15,fontWeight:600,minWidth:90,textAlign:'center'}},`${yr}年${mo}月`),
+        ce('button',{onClick:next,style:{padding:'4px 10px',borderRadius:6,border:'1px solid var(--color-border-secondary)',background:'transparent',cursor:'pointer'}},'▶'),
+        shiftData?.entries&&ce(Btn,{variant:'default',style:{borderColor:'#DC2626',color:'#DC2626',background:'#FFF5F5'},
+          onClick:()=>exportTimelinePDF(ym,staff,shiftData,sharedSpec,specK,specT,selFac)},'📄 PDF出力')
+      )
+    ),
+
+    !shiftData?.entries&&ce('div',{style:{background:'#FEF9C3',border:'1px solid #D97706',borderRadius:8,padding:'10px 14px',marginBottom:12,fontSize:13,color:'#92400E'}},
+      '⚠️ シフトがまだ生成されていません。「シフト管理」タブで自動生成してください。'),
+
+    ce('div',{style:{overflowX:'auto',border:'1px solid #E2E8F0',borderRadius:10,overflow:'hidden'}},
+      ce('div',{style:{minWidth:640}},
+        // 時刻ヘッダ（React管理、1回だけ）
+        ce('div',{style:{display:'flex',background:'#F8FAFC',borderBottom:'2px solid #CBD5E1',
+          position:'sticky',top:0,zIndex:10,height:26}},
+          ce('div',{style:{width:46+24+58,flexShrink:0,borderRight:'1px solid #E2E8F0',
+            fontSize:9,color:'#94A3B8',display:'flex',alignItems:'center',justifyContent:'center',fontWeight:600}},'日/施設/氏名'),
+          ce('div',{style:{flex:1,position:'relative',overflow:'hidden'}},
+            hourTicks.map(h=>ce('div',{key:h,style:{position:'absolute',
+              left:`${pct(h)}%`,top:0,bottom:0,
+              borderLeft:h>GANTT_START?`1px solid ${h%3===0?'#CBD5E1':'#E2E8F0'}`:'none',
+              display:'flex',alignItems:'center'}},
+              ce('span',{style:{fontSize:h%3===0?9:7,color:h%6===0?'#475569':h%3===0?'#94A3B8':'#CBD5E1',
+                fontWeight:h%6===0?700:400,transform:'translateX(2px)',whiteSpace:'nowrap',lineHeight:1,pointerEvents:'none'}},
+                h>=24?`${h-24}:00`:`${h}:00`)
+            ))
+          )
+        ),
+        // ガント本体（innerHTML）
+        ce('div',{
+          dangerouslySetInnerHTML:{__html:ganttHtml},
+          onClick:handleGanttClick,
+          style:{cursor:'default'}
+        })
+      )
+    ),
+
+    // 凡例
+    ce('div',{style:{display:'flex',gap:10,marginTop:8,flexWrap:'wrap',fontSize:11,color:'var(--color-text-secondary)',paddingTop:6,borderTop:'1px solid var(--color-border-tertiary)'}},
+      Object.entries(GANTT_COLORS).map(([code,color])=>{
+        const hrs=getHours(code,'kurashiki');
+        return ce('span',{key:code,style:{display:'flex',alignItems:'center',gap:3}},
+          ce('span',{style:{width:22,height:9,borderRadius:2,background:color,display:'inline-block'}}),
+          code,hrs&&ce('span',{style:{color:'#CBD5E1',fontSize:9}},` ${toDisplay(hrs[0])}〜${toDisplay(hrs[1])}`)
+        );
+      }),
+      ce('span',{style:{display:'flex',alignItems:'center',gap:3,color:'#F59E0B',fontSize:10}},
+        ce('span',{style:{width:22,height:9,borderRadius:2,background:'#6EE7B7',boxShadow:'0 0 0 2px #F59E0B inset',display:'inline-block'}}),
+        'カスタム時間')
+    ),
+
+    editTarget&&ce(TimelineEditModal,{
+      date:editTarget.date,fac:editTarget.fac,
+      entry:editTarget.entry,entryIdx:editTarget.entryIdx,
+      staff,shiftData,
+      onSave:saveEdit,onDelete:deleteEdit,
+      onClose:()=>setEditTarget(null)
+    })
+  );
+}
+// ── PREFS PAGE ──
+function PrefsPage({ym,setYm,staff,prefs,onSetPref}){
+  const[yr,mo]=ym.split('-').map(Number);
+  const dim=new Date(yr,mo,0).getDate();
+  const first=new Date(yr,mo-1,1).getDay();
+  const[sel,setSel]=useState(null);
+  const[dates,setDates]=useState([]);
+
+  const deadline=new Date(yr,mo-2,20);
+  const isOver=today>deadline;
+  const getPref=id=>prefs[`${id}_${ym}`];
+  const overdue=staff.filter(s=>!getPref(s.id)?.submitted);
+  const prev=()=>mo===1?(setYm(`${yr-1}-12`)):(setYm(`${yr}-${String(mo-1).padStart(2,'0')}`));
+  const next=()=>mo===12?(setYm(`${yr+1}-01`)):(setYm(`${yr}-${String(mo+1).padStart(2,'0')}`));
+
+  const openEdit=(s)=>{
+    const p=getPref(s.id);setSel(s);
+    setDates(p?.dates||[]);
+  };
+  const save=()=>{
+    onSetPref(sel.id,ym,{dates,submitted:true,submittedAt:new Date().toISOString()});
+    setSel(null);
+  };
+  const tog=(date)=>setDates(p=>p.includes(date)?p.filter(x=>x!==date):[...p,date]);
+
+  return ce('div',null,
+    ce('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}},
+      ce('div',null,
+        ce('h2',{style:{fontSize:18,fontWeight:600,margin:0}},'希望休管理'),
+        ce('div',{style:{fontSize:12,color:isOver&&overdue.length>0?'#B91C1C':'var(--color-text-secondary)',marginTop:2}},
+          `締切：${yr}年${mo===1?12:mo-1}月20日 `,
+          isOver&&overdue.length>0&&`| ⚠️ ${overdue.length}名未提出`
+        )
+      ),
+      ce('div',{style:{display:'flex',gap:8}},
+        ce('button',{onClick:prev,style:{padding:'4px 10px',borderRadius:6,border:'1px solid var(--color-border-secondary)',background:'transparent',cursor:'pointer'}},'◀'),
+        ce('span',{style:{fontSize:15,fontWeight:600,minWidth:90,textAlign:'center'}},`${yr}年${mo}月`),
+        ce('button',{onClick:next,style:{padding:'4px 10px',borderRadius:6,border:'1px solid var(--color-border-secondary)',background:'transparent',cursor:'pointer'}},'▶')
+      )
+    ),
+    staff.length===0?ce('div',{style:{padding:40,textAlign:'center',fontSize:14,color:'var(--color-text-secondary)'}},'スタッフを先に登録してください')
+    :ce('div',{style:{display:'flex',flexDirection:'column',gap:8}},
+      staff.map(s=>{
+        const p=getPref(s.id);const over=isOver&&!p?.submitted;
+        return ce('div',{key:s.id,style:{border:`1px solid ${over?'#FCA5A5':'var(--color-border-tertiary)'}`,borderRadius:8,padding:'10px 14px',background:over?'#FFF5F5':'var(--color-background-primary)',display:'flex',justifyContent:'space-between',alignItems:'center'}},
+          ce('div',null,
+            ce('div',{style:{fontWeight:500,fontSize:14,marginBottom:2}},s.name,
+              ce('span',{style:{marginLeft:8,fontSize:11,background:p?.submitted?'#DCFCE7':over?'#FEE2E2':'#F3F4F6',color:p?.submitted?'#166534':over?'#B91C1C':'#6B7280',padding:'2px 6px',borderRadius:4}},
+                p?.submitted?'✓ 提出済':over?'⚠ 未提出(期限超過)':'未提出')
+            ),
+            ce('div',{style:{fontSize:12,color:'var(--color-text-secondary)'}},
+              p?.dates?.length>0?`希望休 ${p.dates.length}日`:'希望休なし',
+              ` (${s.inputMethod}方式)`)
+          ),
+          ce(Btn,{small:true,onClick:()=>openEdit(s)},'設定・編集')
+        );
+      })
+    ),
+    sel&&ce(Modal,{title:`${sel.name} — ${yr}年${mo}月 希望休設定`,onClose:()=>setSel(null)},
+      ce('p',{style:{fontSize:12,color:'var(--color-text-secondary)',marginBottom:10}},
+        sel.inputMethod==='希望出勤'?'出勤できる日を選択（選択日以外は出勤不可）':'休みたい日を選択'
+      ),
+      ce('div',{style:{display:'grid',gridTemplateColumns:'repeat(7,1fr)',gap:3,marginBottom:4}},
+        DAYS.map((d,i)=>ce('div',{key:d,style:{textAlign:'center',fontSize:11,fontWeight:600,padding:3,color:i===0?'#EF4444':i===6?'#3B82F6':'var(--color-text-secondary)'}},d))
+      ),
+      ce('div',{style:{display:'grid',gridTemplateColumns:'repeat(7,1fr)',gap:3,marginBottom:12}},
+        Array.from({length:first}).map((_,i)=>ce('div',{key:'e'+i})),
+        Array.from({length:dim},(_,i)=>{
+          const d=i+1,date=ds(yr,mo,d),dow=new Date(yr,mo-1,d).getDay();
+          const on=dates.includes(date);
+          return ce('button',{key:d,onClick:()=>tog(date),style:{padding:'7px 2px',borderRadius:6,border:'none',cursor:'pointer',fontFamily:'inherit',fontSize:12,fontWeight:600,background:on?'#EF4444':'var(--color-background-secondary)',color:on?'#fff':dow===0?'#EF4444':dow===6?'#3B82F6':'var(--color-text-primary)',transition:'all .1s'}},d);
+        })
+      ),
+      ce('div',{style:{fontSize:13,fontWeight:600,marginBottom:12,color:'var(--color-text-primary)'}},`選択中: ${dates.length}日`),
+      ce('div',{style:{display:'flex',justifyContent:'space-between'}},
+        ce(Btn,{small:true,onClick:()=>setDates([])},'クリア'),
+        ce('div',{style:{display:'flex',gap:8}},
+          ce(Btn,{onClick:()=>setSel(null)},'キャンセル'),
+          ce(Btn,{variant:'primary',onClick:save},'保存')
+        )
+      )
+    )
+  );
+}
+
+// ── LINE SEND MODAL ──
+function buildShiftMessage(s,ym,entries,staff){
+  const[yr,mo]=ym.split('-').map(Number);
+  const dim=new Date(yr,mo,0).getDate();
+  const lines=[`【${yr}年${mo}月 シフト確定のお知らせ】`,``,`${s.name}さん、お疲れ様です。`,`来月のシフトをお知らせします。`,``];
+  for(let d=1;d<=dim;d++){
+    const date=ds(yr,mo,d);
+    const dayEntries=(entries[date]||[]).filter(e=>e.staffId===s.id);
+    if(dayEntries.length===0)continue;
+    const e=dayEntries[0];
+    const dow=new Date(yr,mo-1,d).getDay();
+    const dayLabel=`${mo}/${d}（${DAYS[dow]}）`;
+    if(e.shiftCode==='休'||e.shiftCode==='希')continue;
+    const time=e.facility?shiftTime(e.shiftCode,e.facility):'';
+    lines.push(`${dayLabel} ${e.shiftCode}${e.facility?` ${FAC_NAME[e.facility]}`:''} ${time}`);
+  }
+  lines.push('','変更がある場合はマネージャーにご連絡ください。');
+  return lines.join('\n');
+}
+
+function LINESendModal({ym,staff,shiftData,onClose,lineToken}){
+  const[copied,setCopied]=useState({});
+  const[sending,setSending]=useState(false);
+  const[results,setResults]=useState([]);
+
+  const entries=shiftData?.entries||{};
+  const msgs=staff.map(s=>({s,msg:buildShiftMessage(s,ym,entries,staff)}));
+
+  const copy=(id,text)=>{
+    navigator.clipboard.writeText(text).then(()=>{setCopied(p=>({...p,[id]:true}));setTimeout(()=>setCopied(p=>({...p,[id]:false})),2000);});
+  };
+
+  const exportJSON=()=>{
+    const data=msgs.map(({s,msg})=>({lineId:s.lineId,name:s.name,message:msg}));
+    const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'});
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement('a');a.href=url;a.download=`shift_line_${ym}.json`;a.click();
+  };
+
+  const sendAll=async()=>{
+    if(!lineToken){alert('設定画面でLINE Channel Access Tokenを入力してください');return;}
+    setSending(true);const r=[];
+    for(const{s,msg}of msgs){
+      if(!s.lineId){r.push({name:s.name,status:'スキップ（LINE ID未設定）'});continue;}
+      try{
+        const res=await fetch('https://api.line.me/v2/bot/message/push',{method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${lineToken}`},body:JSON.stringify({to:s.lineId,messages:[{type:'text',text:msg}]})});
+        r.push({name:s.name,status:res.ok?'✓ 送信成功':`✗ エラー(${res.status})`});
+      }catch{r.push({name:s.name,status:'✗ 通信エラー'});}
+    }
+    setResults(r);setSending(false);
+  };
+
+  return ce(Modal,{title:`LINE シフト送信 — ${ym}`,onClose,wide:true},
+    ce('div',{style:{background:'#EFF6FF',borderRadius:8,padding:'10px 14px',marginBottom:14,fontSize:12,color:'#1E40AF'}},
+      '💡 各スタッフのメッセージを確認・コピーできます。「一括送信」はLINE Messaging APIを使用（Channel Access Token要設定）。エルメ経由の場合はJSONエクスポートをご利用ください。'
+    ),
+    ce('div',{style:{display:'flex',gap:8,marginBottom:14,flexWrap:'wrap'}},
+      ce(Btn,{variant:'primary',onClick:sendAll,disabled:sending},sending?'送信中...':'📤 LINE一括送信'),
+      ce(Btn,{onClick:exportJSON},'📦 JSONエクスポート（エルメ用）')
+    ),
+    results.length>0&&ce('div',{style:{background:'#F0FDF4',borderRadius:8,padding:'10px 14px',marginBottom:12,fontSize:12}},
+      results.map(r=>ce('div',{key:r.name},`${r.name}: ${r.status}`))
+    ),
+    ce('div',{style:{maxHeight:420,overflowY:'auto',display:'flex',flexDirection:'column',gap:10}},
+      msgs.map(({s,msg})=>ce('div',{key:s.id,style:{border:'1px solid var(--color-border-tertiary)',borderRadius:8,padding:'10px 14px'}},
+        ce('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8}},
+          ce('div',null,
+            ce('span',{style:{fontWeight:600,fontSize:14}}),
+            s.name,
+            ce('span',{style:{marginLeft:8,fontSize:11,color:'#9CA3AF'}}),
+            s.lineId?s.lineId.slice(0,16)+'…':'LINE ID未設定'
+          ),
+          ce(Btn,{small:true,variant:copied[s.id]?'success':'default',onClick:()=>copy(s.id,msg)},
+            copied[s.id]?'✓ コピー済':'コピー')
+        ),
+        ce('pre',{style:{fontSize:11,color:'var(--color-text-secondary)',background:'var(--color-background-secondary)',borderRadius:6,padding:'8px 10px',margin:0,whiteSpace:'pre-wrap',maxHeight:140,overflowY:'auto',fontFamily:'inherit',lineHeight:1.6}},msg)
+      ))
+    )
+  );
+}
+
+// ── PDF EXPORT（印刷→PDF保存方式）──
+function exportShiftPDF(ym, staff, shiftData, sharedSpec, specK, specT){
+  if(!shiftData?.entries){alert('シフトがまだ生成されていません');return;}
+  const[yr,mo]=ym.split('-').map(Number);
+  const dim=new Date(yr,mo,0).getDate();
+  const facSpec={kurashiki:specK||{},tonya:specT||{}};
+  const entries=shiftData.entries;
+  const dowJP=['日','月','火','水','木','金','土'];
+
+  const CELL_BG={
+    'A1':'#DBEAFE','早番':'#DCFCE7','遅番':'#F3E8FF',
+    '清掃1':'#FEF9C3','清掃2':'#FFEDD5','用意':'#FCE7F3',
+    '本番':'#FEE2E2','休':'#F3F4F6','希':'#FFE4E6','有':'#CCFBF1',
+  };
+  const CELL_FG={
+    'A1':'#1D4ED8','早番':'#166534','遅番':'#6B21A8',
+    '清掃1':'#854D0E','清掃2':'#9A3412','用意':'#9D174D',
+    '本番':'#991B1B','休':'#9CA3AF','希':'#B91C1C','有':'#0F766E',
+  };
+
+  // 1施設分のテーブルHTML
+  const buildTable=(fac)=>{
+    const facLabel=fac==='kurashiki'?'倉敷':'問屋町';
+    const facStaff=staff.filter(s=>s.facilities?.includes(fac));
+    if(facStaff.length===0) return '';
+
+    // ヘッダ行（日付）
+    let headCols=`<th class="th-name">スタッフ</th>`;
+    for(let d=1;d<=dim;d++){
+      const date=ds(yr,mo,d);
+      const dow=new Date(yr,mo-1,d).getDay();
+      const isHol=sharedSpec[date]?.type==='holiday';
+      const cls=dow===0||isHol?'sun':dow===6?'sat':'';
+      headCols+=`<th class="th-day ${cls}">${d}<br><span class="dow">${dowJP[dow]}</span></th>`;
+    }
+
+    // データ行
+    let rows='';
+    facStaff.forEach((s,si)=>{
+      let cells=`<td class="td-name">${s.name}<br><span class="step">S${s.step}</span></td>`;
+      for(let d=1;d<=dim;d++){
+        const date=ds(yr,mo,d);
+        const dow=new Date(yr,mo-1,d).getDay();
+        const isHol=sharedSpec[date]?.type==='holiday';
+        const isAllClosed=sharedSpec[date]?.type==='closed';
+        const isFacClosed=facSpec[fac][date]?.type==='closed';
+        const isSun=dow===0; const isSat=dow===6;
+
+        const facEntry=(entries[date]||[]).find(e=>e.staffId===s.id&&e.facility===fac);
+        const anyEntry=(entries[date]||[]).find(e=>e.staffId===s.id);
+        const entry=facEntry||anyEntry;
+        const code=entry?.shiftCode||'';
+
+        let bg=''; let fg=''; let extra='';
+        if(isAllClosed||isFacClosed){ bg='#E5E7EB'; fg='#9CA3AF'; }
+        else if(CELL_BG[code]){ bg=CELL_BG[code]; fg=CELL_FG[code]; }
+        else if(isSun||isHol){ bg='#FFF5F5'; }
+        else if(isSat){ bg='#F0F4FF'; }
+
+        const style=`background:${bg||'#fff'};color:${fg||'#374151'};`;
+        cells+=`<td class="td-cell" style="${style}">${code}</td>`;
+      }
+      rows+=`<tr class="${si%2===0?'even':'odd'}">${cells}</tr>`;
+    });
+
+    return `
+      <div class="table-section">
+        <div class="section-title">■ ${facLabel}</div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr>${headCols}</tr></thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>
+      </div>`;
+  };
+
+  // 凡例HTML
+  const legendItems=['A1','早番','遅番','清掃1','清掃2','用意','本番','休','希','有'];
+  const legend=legendItems.map(c=>`
+    <span class="legend-item">
+      <span class="legend-box" style="background:${CELL_BG[c]||'#F3F4F6'};color:${CELL_FG[c]||'#6B7280'}">${c}</span>
+    </span>`).join('');
+
+  const html=`<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<title>シフト表 ${yr}年${mo}月</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0;}
+  body{font-family:'Hiragino Kaku Gothic ProN','Meiryo','Yu Gothic',sans-serif;font-size:9px;color:#1a1a1a;background:#fff;padding:6mm;}
+  @page{size:A4 landscape;margin:8mm 6mm;}
+  @media print{body{padding:0;}}
+
+  .header{display:flex;justify-content:space-between;align-items:flex-end;margin-bottom:4mm;padding-bottom:2mm;border-bottom:2px solid #0F2D52;}
+  .title{font-size:15px;font-weight:700;color:#0F2D52;}
+  .subtitle{font-size:10px;color:#6B7280;}
+  .meta{font-size:8px;color:#9CA3AF;text-align:right;line-height:1.6;}
+
+  .table-section{margin-bottom:5mm;}
+  .section-title{font-size:11px;font-weight:700;color:#0F2D52;margin-bottom:2mm;padding:1mm 3mm;background:#EFF6FF;border-left:3px solid #1D4ED8;border-radius:2px;}
+  .table-wrap{overflow-x:auto;}
+
+  table{border-collapse:collapse;width:100%;table-layout:fixed;}
+  th,td{border:0.3px solid #CBD5E1;text-align:center;vertical-align:middle;overflow:hidden;}
+
+  thead tr{background:#0F2D52;}
+  .th-name{width:20mm;font-size:8px;color:#fff;font-weight:600;padding:1.5mm 1mm;text-align:left;padding-left:2mm;}
+  .th-day{width:6.5mm;font-size:7px;color:#fff;font-weight:600;padding:1mm 0.5mm;line-height:1.3;}
+  .th-day.sun{color:#FCA5A5;}
+  .th-day.sat{color:#93C5FD;}
+  .dow{font-size:6px;font-weight:400;opacity:0.85;}
+
+  .td-name{text-align:left;padding:1.5mm 1mm 1.5mm 2mm;font-weight:600;font-size:8px;background:#F8FAFC;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .step{font-size:6px;color:#6B7280;font-weight:400;}
+  .td-cell{font-size:7.5px;font-weight:700;padding:1mm 0.5mm;line-height:1;}
+  tr.even .td-cell:not([style*="background:#"]){background:#FAFAFA;}
+
+  .legend{display:flex;flex-wrap:wrap;gap:3mm;align-items:center;margin-top:4mm;padding-top:3mm;border-top:0.5px solid #E5E7EB;}
+  .legend-label{font-size:8px;color:#6B7280;font-weight:600;margin-right:2mm;}
+  .legend-box{display:inline-block;padding:1px 5px;border-radius:3px;font-size:7.5px;font-weight:700;border:0.5px solid rgba(0,0,0,0.08);}
+
+  .footer{margin-top:4mm;text-align:right;font-size:7px;color:#9CA3AF;}
+
+  @media print{
+    .no-print{display:none;}
+    body{-webkit-print-color-adjust:exact;print-color-adjust:exact;}
+  }
+  .print-btn{
+    position:fixed;bottom:16px;right:16px;
+    background:#0F2D52;color:#fff;border:none;
+    padding:10px 20px;border-radius:8px;font-size:13px;font-family:inherit;
+    cursor:pointer;box-shadow:0 4px 12px rgba(0,0,0,0.2);
+    z-index:999;
+  }
+  .print-btn:hover{background:#1e4080;}
+</style>
+</head>
+<body>
+
+<button class="print-btn no-print" onclick="window.print()">🖨️ 印刷 / PDF保存</button>
+
+<div class="header">
+  <div>
+    <div class="title">スタジオバース　シフト表</div>
+    <div class="subtitle">${yr}年 ${mo}月</div>
+  </div>
+  <div class="meta">
+    出力日：${new Date().toLocaleDateString('ja-JP',{year:'numeric',month:'long',day:'numeric'})}<br>
+    スタッフ数：${staff.length}名
+  </div>
+</div>
+
+${buildTable('kurashiki')}
+${buildTable('tonya')}
+
+<div class="legend">
+  <span class="legend-label">凡例：</span>
+  ${legend}
+</div>
+
+<div class="footer">Studio Verse シフト管理システム　${yr}年${mo}月</div>
+
+<script>
+// ページ読み込み完了後、印刷ボタンにフォーカス
+window.onload=function(){
+  var btn=document.querySelector('.print-btn');
+  if(btn) btn.focus();
+};
+<\/script>
+</body>
+</html>`;
+
+  const w=window.open('','_blank','width=1100,height=800');
+  if(!w){alert('ポップアップがブロックされています。\nブラウザのアドレスバー右端の「ポップアップをブロック」を許可してください。');return;}
+  w.document.write(html);
+  w.document.close();
+}
+
+// ── SHIFTS PAGE ──
+const SHIFT_CODES=['A1','早番','遅番','清掃1','清掃2','用意','本番','休','希','有'];
+
+function ShiftEditModal({date,fac,entry,staff,onSave,onDelete,onClose}){
+  const facStaff=staff.filter(s=>s.facilities?.includes(fac));
+  const[code,setCode]=useState(entry?.shiftCode||'休');
+  const[staffId,setStaffId]=useState(entry?.staffId||'');
+  const dow=new Date(date).getDay();
+  const dayLabel=`${date.slice(5).replace('-','/')}（${'日月火水木金土'[dow]}）`;
+
+  return ce(Modal,{title:`シフト編集 ─ ${FAC_NAME[fac]} ${dayLabel}`,onClose},
+    ce('div',{style:{marginBottom:14}},
+      ce('label',{style:{display:'block',fontSize:12,color:'#6B7280',marginBottom:6,fontWeight:600}},'シフト種別'),
+      ce('div',{style:{display:'flex',flexWrap:'wrap',gap:6}},
+        SHIFT_CODES.map(c=>ce('button',{key:c,onClick:()=>setCode(c),
+          style:{padding:'5px 10px',borderRadius:6,border:`1.5px solid ${code===c?(SHIFT_FG[c]||'#1D4ED8'):'#E2E8F0'}`,
+            background:code===c?(SHIFT_BG[c]||'#DBEAFE'):'transparent',
+            color:code===c?(SHIFT_FG[c]||'#1D4ED8'):'#374151',
+            fontSize:12,fontWeight:code===c?700:400,cursor:'pointer',fontFamily:'inherit'}},c))
+      )
+    ),
+    ce('div',{style:{marginBottom:18}},
+      ce('label',{style:{display:'block',fontSize:12,color:'#6B7280',marginBottom:6,fontWeight:600}},'担当スタッフ'),
+      ce('select',{value:staffId,onChange:e=>setStaffId(e.target.value),
+        style:{width:'100%',border:'1px solid #E2E8F0',borderRadius:8,padding:'8px 10px',fontSize:13,background:'#fff',fontFamily:'inherit'}},
+        ce('option',{value:''},'─ 未割当 ─'),
+        facStaff.map(s=>ce('option',{key:s.id,value:s.id},`${s.name}（STEP${s.step}・${(s.roles||[]).map(r=>ROLES_DEF.find(d=>d.id===r)?.label||r).join('/')}）`))
+      )
+    ),
+    ce('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center'}},
+      entry
+        ?ce(Btn,{variant:'danger',onClick:()=>{if(confirm('このシフト割当を削除しますか？'))onDelete();}}, '🗑 削除')
+        :ce('span',null),
+      ce('div',{style:{display:'flex',gap:8}},
+        ce(Btn,{onClick:onClose},'キャンセル'),
+        ce(Btn,{variant:'primary',onClick:()=>{if(!staffId&&code!=='休'&&code!=='希'&&code!=='有'){alert('スタッフを選択してください');return;}onSave({shiftCode:code,staffId,facility:fac});}},
+          '✓ 保存')
+      )
+    )
+  );
+}
+
+function ShiftsPage({ym,setYm,staff,sharedSpec,specK,specT,prefs,shifts,onSaveShifts}){
+  const[yr,mo]=ym.split('-').map(Number);
+  const[running,setRunning]=useState(false);
+  const[showLine,setShowLine]=useState(false);
+  const[editTarget,setEditTarget]=useState(null); // {date,fac,entryIdx,entry}
+  const[settings]=useState(()=>{try{return JSON.parse(localStorage.getItem('sv_settings')||'{}')}catch{return{}}});
+
+  const shiftData=shifts[ym];
+  const confirmed=shiftData?._confirmed||false;
+  const entries=shiftData?.entries||{};
+  const alerts=shiftData?.alerts||[];
+
+  const prev=()=>mo===1?(setYm(`${yr-1}-12`)):(setYm(`${yr}-${String(mo-1).padStart(2,'0')}`));
+  const next=()=>mo===12?(setYm(`${yr+1}-01`)):(setYm(`${yr}-${String(mo+1).padStart(2,'0')}`));
+
+  const run=async()=>{
+    if(confirmed&&!confirm('確定済みシフトを再生成します。確定状態はリセットされます。よろしいですか？'))return;
+    setRunning(true);
+    await new Promise(r=>setTimeout(r,300));
+    const res=generateShifts(ym,staff,sharedSpec||{},specK||{},specT||{},prefs);
+    await onSaveShifts(ym,{...res,_confirmed:false});
+    setRunning(false);
+  };
+
+  const toggleConfirm=async()=>{
+    if(!confirmed){
+      if(!confirm('シフトを確定します。確定後も編集・解除できます。よろしいですか？'))return;
+    }
+    await onSaveShifts(ym,{...shiftData,_confirmed:!confirmed});
+  };
+
+  // シフト保存（編集）
+  const saveEdit=async(newEntry)=>{
+    if(!editTarget)return;
+    const{date,fac,entryIdx}=editTarget;
+    const newEntries={...entries};
+    const dayArr=[...(newEntries[date]||[])];
+    // 同じfac・同じstaffIdの既存エントリを除去してから追加
+    const filtered=dayArr.filter(e=>!(e.facility===fac&&(entryIdx!=null?dayArr.indexOf(e)===entryIdx:false)));
+    if(newEntry.staffId||newEntry.shiftCode==='休'||newEntry.shiftCode==='希'||newEntry.shiftCode==='有'){
+      // 同じスタッフの同じfacエントリを更新 or 追加
+      const idx=entryIdx!=null?entryIdx:-1;
+      if(idx>=0&&idx<dayArr.length){
+        dayArr[idx]={...dayArr[idx],...newEntry};
+      } else {
+        dayArr.push({...newEntry});
+      }
+      newEntries[date]=dayArr;
+    }
+    await onSaveShifts(ym,{...shiftData,entries:newEntries,_confirmed:false});
+    setEditTarget(null);
+  };
+
+  const deleteEdit=async()=>{
+    if(!editTarget)return;
+    const{date,fac,entryIdx}=editTarget;
+    const newEntries={...entries};
+    const dayArr=[...(newEntries[date]||[])];
+    if(entryIdx!=null) dayArr.splice(entryIdx,1);
+    newEntries[date]=dayArr;
+    await onSaveShifts(ym,{...shiftData,entries:newEntries,_confirmed:false});
+    setEditTarget(null);
+  };
+
+  const addShift=(date,fac)=>{
+    setEditTarget({date,fac,entryIdx:null,entry:null});
+  };
+
+  const dim=new Date(yr,mo,0).getDate();
+  const getName=id=>staff.find(s=>s.id===id)?.name||id;
+
+  return ce('div',null,
+    // ── ヘッダ ──
+    ce('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12,flexWrap:'wrap',gap:8}},
+      ce('div',{style:{display:'flex',alignItems:'center',gap:10}},
+        ce('h2',{style:{fontSize:18,fontWeight:600,margin:0}},'シフト管理'),
+        confirmed&&ce('span',{style:{background:'#DCFCE7',color:'#166534',fontSize:11,fontWeight:700,padding:'2px 10px',borderRadius:10,border:'1px solid #86EFAC'}},'✓ 確定済')
+      ),
+      ce('div',{style:{display:'flex',gap:6,flexWrap:'wrap',alignItems:'center'}},
+        ce('button',{onClick:prev,style:{padding:'4px 10px',borderRadius:6,border:'1px solid var(--color-border-secondary)',background:'transparent',cursor:'pointer'}},'◀'),
+        ce('span',{style:{fontSize:15,fontWeight:600,minWidth:90,textAlign:'center'}},`${yr}年${mo}月`),
+        ce('button',{onClick:next,style:{padding:'4px 10px',borderRadius:6,border:'1px solid var(--color-border-secondary)',background:'transparent',cursor:'pointer'}},'▶'),
+        ce(Btn,{variant:'primary',onClick:run,disabled:running||staff.length===0},running?'生成中…':'⚡ 自動生成'),
+        shiftData&&!confirmed&&ce(Btn,{variant:'success',onClick:toggleConfirm},'✓ 確定する'),
+        shiftData&&confirmed&&ce(Btn,{variant:'warning',onClick:toggleConfirm},'🔓 確定解除'),
+        shiftData&&ce(Btn,{variant:'primary',style:{background:'#06B6D4'},onClick:()=>setShowLine(true)},'📱 LINE送信'),
+        shiftData&&ce(Btn,{variant:'default',style:{borderColor:'#DC2626',color:'#DC2626',background:'#FFF5F5'},onClick:()=>exportShiftPDF(ym,staff,shiftData,sharedSpec||{},specK||{},specT||{})},'📄 PDF出力')
+      )
+    ),
+
+    // 編集モード案内
+    shiftData&&!confirmed&&ce('div',{style:{background:'#EFF6FF',border:'1px solid #BFDBFE',borderRadius:8,padding:'7px 12px',marginBottom:10,fontSize:12,color:'#1E40AF',display:'flex',alignItems:'center',gap:6}},
+      '✏️ 各シフトの「編集」ボタンで担当者・シフト種別を変更できます。変更すると確定状態が解除されます。'),
+    shiftData&&confirmed&&ce('div',{style:{background:'#F0FDF4',border:'1px solid #86EFAC',borderRadius:8,padding:'7px 12px',marginBottom:10,fontSize:12,color:'#166534',display:'flex',alignItems:'center',gap:6}},
+      '🔒 確定済みです。変更する場合は「確定解除」ボタンを押してから編集してください。'),
+
+    staff.length===0&&ce('div',{style:{background:'#FEE2E2',borderRadius:8,padding:'10px 14px',marginBottom:12,fontSize:13,color:'#B91C1C'}},'⚠ スタッフが登録されていません'),
+
+    alerts.length>0&&ce('div',{style:{marginBottom:12}},
+      ce('div',{style:{fontWeight:600,fontSize:13,marginBottom:6,color:'#B91C1C'}},`⚠ アラート ${alerts.length}件`),
+      alerts.slice(0,5).map(a=>ce('div',{key:a.id,style:{background:a.type==='no_staff'?'#FEF2F2':'#FEF9C3',borderRadius:6,padding:'5px 10px',marginBottom:4,fontSize:12,color:a.type==='no_staff'?'#B91C1C':'#92400E'}},a.msg)),
+      alerts.length>5&&ce('div',{style:{fontSize:12,color:'var(--color-text-secondary)',marginTop:4}},`他 ${alerts.length-5}件`)
+    ),
+
+    shiftData
+      ?ce('div',{style:{overflowX:'auto'}},
+        ce('table',{style:{width:'100%',borderCollapse:'collapse',fontSize:12,minWidth:560}},
+          ce('thead',null,ce('tr',{style:{background:'var(--color-background-secondary)',position:'sticky',top:0,zIndex:2}},
+            ['日','曜','倉敷','問屋町'].map(h=>ce('th',{key:h,style:{padding:'8px 10px',textAlign:'left',fontWeight:500,fontSize:11,color:'var(--color-text-secondary)',borderBottom:'2px solid var(--color-border-tertiary)',whiteSpace:'nowrap'}},h))
+          )),
+          ce('tbody',null,
+            Array.from({length:dim},(_,i)=>{
+              const d=i+1,date=ds(yr,mo,d);
+              const es=entries[date]||[];
+              const dow=new Date(yr,mo-1,d).getDay();
+              const isAllClosed=sharedSpec[date]?.type==='closed';
+              const byFac={
+                kurashiki:es.map((e,idx)=>({...e,_idx:idx})).filter(e=>e.facility==='kurashiki'),
+                tonya:es.map((e,idx)=>({...e,_idx:idx})).filter(e=>e.facility==='tonya')
+              };
+              const isSun=dow===0,isSat=dow===6,isHol=sharedSpec[date]?.type==='holiday';
+              const rowBg=isAllClosed?'#F9FAFB':isSun||isHol?'#FFF5F5':isSat?'#F8F8FF':'';
+              return ce('tr',{key:d,style:{borderBottom:'1px solid var(--color-border-tertiary)',background:rowBg,verticalAlign:'top'}},
+                ce('td',{style:{padding:'8px 10px',fontWeight:600,color:isSun||isHol?'#EF4444':isSat?'#3B82F6':'var(--color-text-primary)',whiteSpace:'nowrap'}},`${mo}/${d}`),
+                ce('td',{style:{padding:'8px 10px',color:isSun||isHol?'#EF4444':isSat?'#3B82F6':'var(--color-text-secondary)'}},DAYS[dow]+(isHol?'🎌':'')+(sharedSpec[date]?.type==='event'?'🎪':'')),
+                isAllClosed
+                  ?ce('td',{colSpan:2,style:{padding:'8px 10px',color:'#9CA3AF',fontStyle:'italic',fontSize:12}},'全体休業')
+                  :ce(React.Fragment,null,
+                    ['kurashiki','tonya'].map(fac=>{
+                      const isFacClosed=(fac==='kurashiki'?specK:specT)[date]?.type==='closed';
+                      return ce('td',{key:fac,style:{padding:'6px 10px'}},
+                        isFacClosed
+                          ?ce('span',{style:{fontSize:11,color:'#9CA3AF'}},'休業')
+                          :ce('div',{style:{display:'flex',flexDirection:'column',gap:4}},
+                            // 既存エントリ
+                            byFac[fac].map((e,i)=>ce('div',{key:i,style:{display:'flex',alignItems:'center',gap:4}},
+                              ce(ShiftBadge,{code:e.shiftCode}),
+                              ce('span',{style:{fontSize:11,color:'var(--color-text-primary)'}},getName(e.staffId)),
+                              !confirmed&&ce('button',{
+                                onClick:()=>setEditTarget({date,fac,entryIdx:e._idx,entry:e}),
+                                style:{background:'transparent',border:'1px solid #CBD5E1',borderRadius:4,padding:'1px 5px',fontSize:10,cursor:'pointer',color:'#6B7280',marginLeft:2,lineHeight:1.4}
+                              },'編集')
+                            )),
+                            // 追加ボタン
+                            !confirmed&&ce('button',{
+                              onClick:()=>addShift(date,fac),
+                              style:{display:'inline-flex',alignItems:'center',gap:2,background:'transparent',border:'1px dashed #CBD5E1',borderRadius:4,padding:'2px 7px',fontSize:10,cursor:'pointer',color:'#9CA3AF',marginTop:2,width:'fit-content'}
+                            },'＋ 追加')
+                          )
+                      );
+                    })
+                  )
+              );
+            })
+          )
+        )
+      )
+      :ce('div',{style:{padding:40,textAlign:'center',color:'var(--color-text-secondary)',fontSize:14}},'「⚡ 自動生成」ボタンでシフトを生成してください'),
+
+    // 編集モーダル
+    editTarget&&ce(ShiftEditModal,{
+      date:editTarget.date,
+      fac:editTarget.fac,
+      entry:editTarget.entry,
+      staff,
+      onSave:saveEdit,
+      onDelete:deleteEdit,
+      onClose:()=>setEditTarget(null)
+    }),
+
+    showLine&&ce(LINESendModal,{ym,staff,shiftData,onClose:()=>setShowLine(false),lineToken:settings.lineToken||''})
+  );
+}
+
+// ── SETTINGS PAGE ──
+function SettingsPage({syncFromGas,syncStatus}){
+  const[s,setS]=useState(()=>{try{return JSON.parse(localStorage.getItem('sv_settings')||'{}')}catch{return{}}});
+  const[gasUrl,setGasUrlState]=useState(()=>getGasUrl());
+  const[saved,setSaved]=useState(false);
+  const[testing,setTesting]=useState(false);
+  const[testResult,setTestResult]=useState(null);
+  const set=(k,v)=>setS(p=>({...p,[k]:v}));
+
+  const save=()=>{
+    localStorage.setItem('sv_settings',JSON.stringify(s));
+    setGasUrl(gasUrl.trim());
+    setSaved(true);setTimeout(()=>setSaved(false),2500);
+  };
+
+  const testGas=async()=>{
+    const url=gasUrl.trim();
+    if(!url){setTestResult({ok:false,msg:'URLを入力してください'});return;}
+    setTesting(true);setTestResult(null);
+    try{
+      const res=await fetch(url+'?action=getAll');
+      const json=await res.json();
+      if(json.ok){setTestResult({ok:true,msg:'✓ 接続成功！データを正常に取得できました'});}
+      else{setTestResult({ok:false,msg:'接続はできましたがエラー: '+json.error});}
+    }catch(e){setTestResult({ok:false,msg:'接続失敗: '+e.message});}
+    setTesting(false);
+  };
+
+  return ce('div',null,
+    ce('h2',{style:{fontSize:18,fontWeight:600,marginBottom:16}},'設定'),
+
+    // GAS設定セクション
+    ce('div',{style:{border:'1px solid var(--color-border-tertiary)',borderRadius:10,padding:20,maxWidth:580,marginBottom:16}},
+      ce('div',{style:{fontWeight:700,fontSize:14,marginBottom:4,color:'#0F2D52'}},'🔗 Google Apps Script 連携'),
+      ce('div',{style:{fontSize:12,color:'#6B7280',marginBottom:14}},'複数人・複数端末でデータを共有するためのGAS URLを設定します'),
+
+      ce('div',{style:{marginBottom:12}},
+        ce('label',{style:{display:'block',fontSize:12,color:'var(--color-text-secondary)',marginBottom:4,fontWeight:600}},'GAS ウェブアプリ URL'),
+        ce('input',{value:gasUrl,onChange:e=>setGasUrlState(e.target.value),
+          placeholder:'https://script.google.com/macros/s/xxxxxxxxx/exec',
+          style:{width:'100%',boxSizing:'border-box',border:'1px solid var(--color-border-secondary)',
+            borderRadius:6,padding:'7px 10px',fontSize:12,background:'var(--color-background-primary)',
+            color:'var(--color-text-primary)',fontFamily:'inherit'}})
+      ),
+      ce('div',{style:{marginBottom:14}},
+        ce('label',{style:{display:'block',fontSize:12,color:'var(--color-text-secondary)',marginBottom:4,fontWeight:600}},'オペレーター名（更新ログに記録）'),
+        ce(Inp,{value:s.operatorName||'',onChange:v=>set('operatorName',v),placeholder:'例：田中（管理者）'})
+      ),
+
+      ce('div',{style:{background:'#F0FDF4',border:'1px solid #86EFAC',borderRadius:8,padding:'10px 14px',marginBottom:14,fontSize:12,color:'#166534'}},
+        ce('div',{style:{fontWeight:700,marginBottom:4}},'📋 GAS設定手順'),
+        ce('div',null,'1. Google スプレッドシートを新規作成'),
+        ce('div',null,'2. 拡張機能 → Apps Script を開く'),
+        ce('div',null,'3. Code.gs の内容を貼り付けて保存'),
+        ce('div',null,'4. デプロイ → 新しいデプロイ → ウェブアプリ'),
+        ce('div',null,'5. 実行: 自分、アクセス: 全員 → デプロイ'),
+        ce('div',null,'6. 表示されたURLをここに貼り付けて保存')
+      ),
+
+      ce('div',{style:{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}},
+        ce(Btn,{variant:'primary',onClick:save},'保存'),
+        ce(Btn,{onClick:testGas,disabled:testing},testing?'テスト中…':'🔌 接続テスト'),
+        ce(Btn,{onClick:()=>syncFromGas&&syncFromGas(),disabled:syncStatus==='syncing'},
+          syncStatus==='syncing'?'同期中…':'🔄 今すぐ同期'),
+        saved&&ce('span',{style:{fontSize:12,color:'#059669',fontWeight:600}},'✓ 保存しました')
+      ),
+      testResult&&ce('div',{style:{marginTop:10,padding:'8px 12px',borderRadius:8,fontSize:12,
+        background:testResult.ok?'#F0FDF4':'#FFF5F5',
+        color:testResult.ok?'#166534':'#B91C1C',
+        border:'1px solid '+(testResult.ok?'#86EFAC':'#FCA5A5')}},
+        testResult.msg)
+    ),
+
+    // LINE設定セクション
+    ce('div',{style:{border:'1px solid var(--color-border-tertiary)',borderRadius:10,padding:20,maxWidth:580}},
+      ce('div',{style:{fontWeight:700,fontSize:14,marginBottom:14,paddingBottom:10,borderBottom:'1px solid var(--color-border-tertiary)'}},'📱 LINE Messaging API'),
+      ce(Inp,{label:'Channel Access Token',value:s.lineToken||'',onChange:v=>set('lineToken',v),placeholder:'LINE Messaging API Channel Access Token'}),
+      ce('div',{style:{background:'#EFF6FF',borderRadius:8,padding:'10px 14px',marginBottom:14,fontSize:12,color:'#1D4ED8'}},
+        '💡 LINE DevelopersコンソールのMessaging API設定から取得できます。エルメを使用する場合はエルメのAPI設定でアクセストークンを確認してください。'
+      )
+    )
+  );
+}
+
+// ── DASHBOARD ──
+function Dashboard({staff,prefs,shifts,sharedSpec,specK,specT,ym}){
+  const[yr,mo]=ym.split('-').map(Number);
+  const deadline=new Date(yr,mo-2,20);
+  const isOver=today>deadline;
+  const overdue=staff.filter(s=>!prefs[`${s.id}_${ym}`]?.submitted);
+  const shiftData=shifts[ym];
+  const confirmed=shiftData?._confirmed||false;
+  const alertCount=(shiftData?.alerts||[]).length;
+
+  const stats=[
+    {l:'登録スタッフ数',v:staff.length+'名'},
+    {l:'シフト状態',v:confirmed?'✓ 確定済':shiftData?'生成済（未確定）':'未生成'},
+    {l:'アラート',v:alertCount>0?`⚠ ${alertCount}件`:'なし',c:alertCount>0?'#B91C1C':'inherit'},
+    {l:'希望未提出',v:isOver&&overdue.length>0?`⚠ ${overdue.length}名`:overdue.length+'名',c:isOver&&overdue.length>0?'#B91C1C':'inherit'},
+  ];
+
+  return ce('div',null,
+    ce('h2',{style:{fontSize:18,fontWeight:600,marginBottom:16}},'ダッシュボード'),
+    ce('div',{style:{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(150px,1fr))',gap:10,marginBottom:20}},
+      stats.map(s=>ce('div',{key:s.l,style:{background:'var(--color-background-secondary)',borderRadius:8,padding:'12px 14px'}},
+        ce('div',{style:{fontSize:11,color:'var(--color-text-secondary)',marginBottom:4}},s.l),
+        ce('div',{style:{fontSize:18,fontWeight:600,color:s.c||'inherit'}},s.v)
+      ))
+    ),
+    isOver&&overdue.length>0&&ce('div',{style:{background:'#FEF9C3',border:'1px solid #D97706',borderRadius:8,padding:'10px 14px',marginBottom:14}},
+      ce('div',{style:{fontWeight:600,fontSize:13,color:'#92400E',marginBottom:6}},'⚠️ 希望休未提出スタッフ'),
+      overdue.map(s=>ce('div',{key:s.id,style:{fontSize:13,color:'#92400E'}},`・${s.name}（${s.inputMethod}方式）`))
+    ),
+    ce('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:10}},
+      ce('div',{style:{border:'1px solid var(--color-border-tertiary)',borderRadius:8,padding:'12px 14px'}},
+        ce('div',{style:{fontWeight:500,fontSize:13,marginBottom:8}},'スタッフ内訳'),
+        ce('div',{style:{fontSize:13,color:'var(--color-text-secondary)'}},`倉敷: ${staff.filter(s=>s.facilities?.includes('kurashiki')).length}名`),
+        ce('div',{style:{fontSize:13,color:'var(--color-text-secondary)'}},`問屋町: ${staff.filter(s=>s.facilities?.includes('tonya')).length}名`),
+        ce('div',{style:{fontSize:13,color:'var(--color-text-secondary)'}},`清掃専任: ${staff.filter(s=>s.roles?.includes('cleaning')).length}名`)
+      ),
+      ce('div',{style:{border:'1px solid var(--color-border-tertiary)',borderRadius:8,padding:'12px 14px'}},
+        ce('div',{style:{fontWeight:500,fontSize:13,marginBottom:8}},'カレンダー情報'),
+        ce('div',{style:{fontSize:13,color:'var(--color-text-secondary)'}},`共通祝日: ${Object.values(sharedSpec).filter(v=>v?.type==='holiday').length}日`),
+        ce('div',{style:{fontSize:13,color:'var(--color-text-secondary)'}},`倉敷イベント: ${Object.values(specK||{}).filter(v=>v?.type==='event').length}日`),
+        ce('div',{style:{fontSize:13,color:'var(--color-text-secondary)'}},`問屋町イベント: ${Object.values(specT||{}).filter(v=>v?.type==='event').length}日`)
+      ),
+      ce('div',{style:{border:'1px solid var(--color-border-tertiary)',borderRadius:8,padding:'12px 14px'}},
+        ce('div',{style:{fontWeight:500,fontSize:13,marginBottom:8}},'LINE連携'),
+        ce('div',{style:{fontSize:13,color:'var(--color-text-secondary)'}},`LINE ID設定済: ${staff.filter(s=>s.lineId).length}/${staff.length}名`),
+        ce('div',{style:{fontSize:13,color:staff.filter(s=>!s.lineId).length>0?'#D97706':'var(--color-text-secondary)'}},
+          staff.filter(s=>!s.lineId).length>0?`⚠ ${staff.filter(s=>!s.lineId).length}名 未設定`:'全員設定済 ✓')
+      )
+    )
+  );
+}
+
+// ── APP ──
+function App(){
+  const[page,setPage]=useState('dashboard');
+  const[staff,setStaff]=useState([]);
+  const[sharedSpec,setSharedSpec]=useState({});
+  const[specK,setSpecK]=useState({});
+  const[specT,setSpecT]=useState({});
+  const[prefs,setPrefs]=useState({});
+  const[shifts,setShifts]=useState({});
+  const[ym,setYm]=useState(nowYM);
+  const[loaded,setLoaded]=useState(false);
+  const[syncStatus,setSyncStatus]=useState('idle'); // idle|syncing|ok|error
+  const[lastSync,setLastSync]=useState('');
+
+  // GASから最新データを取得してキャッシュ更新
+  const syncFromGas=useCallback(async(silent=false)=>{
+    if(!getGasUrl())return;
+    if(!silent)setSyncStatus('syncing');
+    const gasData=await gasLoadAll();
+    if(gasData){
+      const parse=(v,fb)=>{try{return v?JSON.parse(v):fb;}catch{return fb;}};
+      const s=parse(gasData['sv_staff'],[]);
+      const c=parse(gasData['sv_calendar'],{});
+      const ck=parse(gasData['sv_calK'],{});
+      const ct=parse(gasData['sv_calT'],{});
+      const p=parse(gasData['sv_prefs'],{});
+      const sh=parse(gasData['sv_shifts'],{});
+      setStaff(s);setSharedSpec(c);setSpecK(ck);setSpecT(ct);setPrefs(p);setShifts(sh);
+      // ローカルキャッシュ更新
+      lsSet('sv_staff',s);lsSet('sv_calendar',c);lsSet('sv_calK',ck);
+      lsSet('sv_calT',ct);lsSet('sv_prefs',p);lsSet('sv_shifts',sh);
+      setSyncStatus('ok');
+      setLastSync(new Date().toLocaleTimeString('ja-JP'));
+    }else{
+      setSyncStatus('error');
+    }
+  },[]);
+
+  useEffect(()=>{
+    (async()=>{
+      // まずローカルキャッシュで即時表示
+      const s=lsGet('sv_staff',[]);
+      const c=lsGet('sv_calendar',{});
+      const ck=lsGet('sv_calK',{});
+      const ct=lsGet('sv_calT',{});
+      const p=lsGet('sv_prefs',{});
+      const sh=lsGet('sv_shifts',{});
+      setStaff(s);setSharedSpec(c);setSpecK(ck);setSpecT(ct);setPrefs(p);setShifts(sh);
+      setLoaded(true);
+      // GAS設定済みならバックグラウンドで最新データを取得
+      if(getGasUrl()){
+        setSyncStatus('syncing');
+        await syncFromGas(true);
+      }
+    })();
+  },[]);
+
+  const saveStaff=useCallback(async s=>{
+    let next;
+    setStaff(prev=>{next=prev.find(x=>x.id===s.id)?prev.map(x=>x.id===s.id?s:x):[...prev,s];return next;});
+    setTimeout(()=>stSave('sv_staff',next||[]),0);
+  },[]);
+  const delStaff=useCallback(async id=>{
+    let next;setStaff(prev=>{next=prev.filter(x=>x.id!==id);return next;});
+    setTimeout(()=>stSave('sv_staff',next||[]),0);
+  },[]);
+
+  const handleImport=useCallback(async(type,data)=>{
+    if(type==='staff'){
+      setStaff(prev=>{
+        const next=[...prev];
+        data.forEach(ns=>{const idx=next.findIndex(s=>s.name===ns.name);if(idx>=0)next[idx]={...next[idx],...ns,id:next[idx].id};else next.push(ns);});
+        stSave('sv_staff',next);return next;
+      });
+    }else{
+      // LINE ID import
+      setStaff(prev=>{
+        const next=prev.map(s=>{
+          const match=data.find(r=>(r['名前']||r['name']||Object.values(r)[0])===s.name);
+          if(match){return{...s,lineId:match['LINE_UID']||match['LINE ID']||Object.values(match)[1]||s.lineId};}
+          return s;
+        });
+        stSave('sv_staff',next);return next;
+      });
+    }
+    alert(`インポート完了しました`);
+  },[]);
+
+  const setShared=useCallback(async(date,val)=>{
+    setSharedSpec(prev=>{const next={...prev};val?next[date]=val:delete next[date];stSave('sv_calendar',next);return next;});
+  },[]);
+  const setFac=useCallback(async(fac,date,val)=>{
+    if(fac==='kurashiki'){setSpecK(prev=>{const next={...prev};val?next[date]=val:delete next[date];stSave('sv_calK',next);return next;});}
+    else{setSpecT(prev=>{const next={...prev};val?next[date]=val:delete next[date];stSave('sv_calT',next);return next;});}
+  },[]);
+  const setPref=useCallback(async(staffId,month,data)=>{
+    setPrefs(prev=>{const next={...prev,[`${staffId}_${month}`]:data};stSave('sv_prefs',next);return next;});
+  },[]);
+  const saveShifts=useCallback(async(month,data)=>{
+    setShifts(prev=>{const next={...prev,[month]:data};stSave('sv_shifts',next);return next;});
+  },[]);
+
+  const nav=[
+    {id:'dashboard',l:'ダッシュボード',ic:'◈'},
+    {id:'staff',l:'スタッフ管理',ic:'◎'},
+    {id:'calendar',l:'カレンダー設定',ic:'◷'},
+    {id:'timeline',l:'タイムライン',ic:'▦'},
+    {id:'prefs',l:'希望休管理',ic:'◻'},
+    {id:'shifts',l:'シフト管理',ic:'◫'},
+    {id:'settings',l:'設定',ic:'⚙'},
+  ];
+
+  if(!loaded)return ce('div',{style:{padding:40,textAlign:'center',color:'var(--color-text-secondary)',fontSize:18}},'読み込み中…');
+
+  const syncColor=syncStatus==='ok'?'#4ADE80':syncStatus==='error'?'#F87171':syncStatus==='syncing'?'#FCD34D':'rgba(255,255,255,0.3)';
+  const syncLabel=syncStatus==='ok'?'✓ 同期済 '+lastSync:syncStatus==='error'?'⚠ GAS接続エラー':syncStatus==='syncing'?'↻ 同期中…':'GAS未設定';
+
+  return ce('div',{style:{display:'flex',minHeight:600,fontFamily:'var(--font-sans)',fontSize:14,color:'var(--color-text-primary)'}},
+    ce('div',{style:{width:186,background:'#0F2D52',flexShrink:0,display:'flex',flexDirection:'column'}},
+      ce('div',{style:{padding:'14px 14px',borderBottom:'1px solid rgba(255,255,255,0.1)'}},
+        ce('div',{style:{color:'#93C5FD',fontSize:11,fontWeight:500,marginBottom:2}},'スタジオバース'),
+        ce('div',{style:{color:'#fff',fontSize:13,fontWeight:600}},'シフト管理 v2')
+      ),
+      ce('nav',{style:{flex:1,padding:'6px 0'}},
+        nav.map(n=>ce('button',{key:n.id,onClick:()=>setPage(n.id),style:{display:'flex',alignItems:'center',gap:8,width:'100%',padding:'9px 14px',background:page===n.id?'rgba(255,255,255,0.12)':'transparent',border:'none',cursor:'pointer',color:page===n.id?'#fff':'rgba(255,255,255,0.65)',fontSize:12,fontWeight:page===n.id?500:400,fontFamily:'inherit',textAlign:'left',borderLeft:page===n.id?'3px solid #60A5FA':'3px solid transparent',transition:'all .15s'}},
+          ce('span',{style:{fontSize:14}},n.ic),n.l))
+      ),
+      ce('div',{style:{padding:'8px 12px',borderTop:'1px solid rgba(255,255,255,0.1)'}},ce('div',{style:{fontSize:9,color:syncColor,marginBottom:3,lineHeight:1.4}},syncLabel),getGasUrl()&&ce('button',{onClick:()=>syncFromGas(),style:{fontSize:9,color:'rgba(255,255,255,0.5)',background:'transparent',border:'1px solid rgba(255,255,255,0.2)',borderRadius:4,padding:'2px 8px',cursor:'pointer',fontFamily:'inherit',width:'100%'}},'🔄 今すぐ同期'))
+    ),
+    ce('div',{style:{flex:1,overflow:'auto',background:'var(--color-background-tertiary)'}},
+      ce('div',{style:{maxWidth:1100,padding:20}},
+        page==='dashboard'&&ce(Dashboard,{staff,prefs,shifts,sharedSpec,specK,specT,ym}),
+        page==='staff'&&ce(StaffPage,{staff,onSave:saveStaff,onDelete:delStaff,onImport:handleImport}),
+        page==='calendar'&&ce(CalendarPage,{ym,setYm,sharedSpec,specK,specT,onSetShared:setShared,onSetFac:setFac}),
+        page==='timeline'&&ce(TimelinePage,{ym,setYm,staff,shiftData:shifts[ym],sharedSpec,specK,specT,onSaveShifts:saveShifts,shifts}),
+        page==='prefs'&&ce(PrefsPage,{ym,setYm,staff,prefs,onSetPref:setPref}),
+        page==='shifts'&&ce(ShiftsPage,{ym,setYm,staff,sharedSpec,specK,specT,prefs,shifts,onSaveShifts:saveShifts}),
+        page==='settings'&&ce(SettingsPage,{syncFromGas,syncStatus})
+      )
+    )
+  );
+}
+ReactDOM.render(ce(App),document.getElementById('root'));
+</script>
