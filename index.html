@@ -2,6 +2,13 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
 <div id="root"></div>
 <script>
+// ============================================================
+// ★ GAS URL設定（1箇所だけ変更してください）
+// Google Apps ScriptのウェブアプリURLをここに貼り付けてください
+// 例: 'https://script.google.com/macros/s/xxxxxxxxxx/exec'
+const HARDCODED_GAS_URL = '';
+// ============================================================
+
 const {useState,useEffect,useMemo,useCallback,useRef}=React;
 const ce=React.createElement;
 
@@ -119,7 +126,7 @@ function generateShifts(ym,staffList,sharedSpec,specK,specT,allPrefs){
 
 // ── STORAGE（GAS + localStorage ハイブリッド）──
 const GAS_URL_KEY='sv_gas_url';
-function getGasUrl(){return localStorage.getItem(GAS_URL_KEY)||'';}
+function getGasUrl(){return HARDCODED_GAS_URL||localStorage.getItem(GAS_URL_KEY)||'';}
 function setGasUrl(url){localStorage.setItem(GAS_URL_KEY,url);}
 
 async function gasPost(body){
@@ -1548,6 +1555,7 @@ function ShiftsPage({ym,setYm,staff,sharedSpec,specK,specT,prefs,shifts,onSaveSh
 function SettingsPage({syncFromGas,syncStatus}){
   const[s,setS]=useState(()=>{try{return JSON.parse(localStorage.getItem('sv_settings')||'{}')}catch{return{}}});
   const[gasUrl,setGasUrlState]=useState(()=>getGasUrl());
+  const isHardcoded=!!HARDCODED_GAS_URL;
   const[saved,setSaved]=useState(false);
   const[testing,setTesting]=useState(false);
   const[testResult,setTestResult]=useState(null);
@@ -1582,11 +1590,14 @@ function SettingsPage({syncFromGas,syncStatus}){
 
       ce('div',{style:{marginBottom:12}},
         ce('label',{style:{display:'block',fontSize:12,color:'var(--color-text-secondary)',marginBottom:4,fontWeight:600}},'GAS ウェブアプリ URL'),
-        ce('input',{value:gasUrl,onChange:e=>setGasUrlState(e.target.value),
-          placeholder:'https://script.google.com/macros/s/xxxxxxxxx/exec',
-          style:{width:'100%',boxSizing:'border-box',border:'1px solid var(--color-border-secondary)',
-            borderRadius:6,padding:'7px 10px',fontSize:12,background:'var(--color-background-primary)',
-            color:'var(--color-text-primary)',fontFamily:'inherit'}})
+        isHardcoded
+          ?ce('div',{style:{padding:'8px 12px',borderRadius:6,background:'#F0FDF4',border:'1px solid #86EFAC',fontSize:12,color:'#166534'}},
+            '✓ HTMLに直接埋め込み済み（変更はHTMLファイルのHARDCODED_GAS_URLを編集）')
+          :ce('input',{value:gasUrl,onChange:e=>setGasUrlState(e.target.value),
+            placeholder:'https://script.google.com/macros/s/xxxxxxxxx/exec',
+            style:{width:'100%',boxSizing:'border-box',border:'1px solid var(--color-border-secondary)',
+              borderRadius:6,padding:'7px 10px',fontSize:12,background:'var(--color-background-primary)',
+              color:'var(--color-text-primary)',fontFamily:'inherit'}})
       ),
       ce('div',{style:{marginBottom:14}},
         ce('label',{style:{display:'block',fontSize:12,color:'var(--color-text-secondary)',marginBottom:4,fontWeight:600}},'オペレーター名（更新ログに記録）'),
