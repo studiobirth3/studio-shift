@@ -6,7 +6,7 @@
 // ★ GAS URL設定（1箇所だけ変更してください）
 // Google Apps ScriptのウェブアプリURLをここに貼り付けてください
 // 例: 'https://script.google.com/macros/s/xxxxxxxxxx/exec'
-const HARDCODED_GAS_URL = '';
+const HARDCODED_GAS_URL = 'https://script.google.com/macros/s/AKfycbyrGBlG-xQPiUMjj4H1VoRAp1Pwysp_MxID-rv-ht6Smn2miEq5FRpM4m0R4PjSYGIE/exec';
 // ============================================================
 
 const {useState,useEffect,useMemo,useCallback,useRef}=React;
@@ -129,15 +129,31 @@ const GAS_URL_KEY='sv_gas_url';
 function getGasUrl(){return HARDCODED_GAS_URL||localStorage.getItem(GAS_URL_KEY)||'';}
 function setGasUrl(url){localStorage.setItem(GAS_URL_KEY,url);}
 
-async function gasPost(body){
-  const url=getGasUrl();if(!url)return null;
-  try{const res=await fetch(url,{method:'POST',body:JSON.stringify(body)});return await res.json();}
-  catch(e){console.warn('GAS error:',e);return null;}
-}
+// GASへGET（データ読み込み）
 async function gasGet(params){
   const url=getGasUrl();if(!url)return null;
-  try{const qs=new URLSearchParams(params).toString();const res=await fetch(url+'?'+qs);return await res.json();}
-  catch(e){console.warn('GAS error:',e);return null;}
+  try{
+    const qs=new URLSearchParams(params).toString();
+    const res=await fetch(url+'?'+qs,{redirect:'follow'});
+    return await res.json();
+  }catch(e){console.warn('GAS GET error:',e);return null;}
+}
+// GASへPOST（FormData方式でCORSプリフライト回避）
+async function gasPost(body){
+  const url=getGasUrl();if(!url)return null;
+  try{
+    const fd=new FormData();
+    fd.append('payload',JSON.stringify(body));
+    const res=await fetch(url,{method:'POST',body:fd,redirect:'follow'});
+    return await res.json();
+  }catch(e){
+    // FormDataが失敗したらno-corsで送信（書き込みのみ、レスポンスなし）
+    try{
+      fetch(url+'?action=set&key='+encodeURIComponent(body.key)+'&nocheck=1',
+        {method:'POST',body:JSON.stringify(body),mode:'no-cors'});
+    }catch(_){}
+    return null;
+  }
 }
 async function gasLoadAll(){
   const r=await gasGet({action:'getAll'});
@@ -1803,7 +1819,34 @@ function App(){
     {id:'settings',l:'設定',ic:'⚙'},
   ];
 
-  if(!loaded)return ce('div',{style:{padding:40,textAlign:'center',color:'var(--color-text-secondary)',fontSize:18}},'読み込み中…');
+  // GAS URL未設定かつローカルにもデータがない場合 → 初期設定画面
+  if(!loaded) return ce('div',{style:{minHeight:'100vh',display:'flex',alignItems:'center',justifyContent:'center',background:'#F8FAFC',fontFamily:'var(--font-sans)'}},
+    ce('div',{style:{textAlign:'center',padding:40}},
+      ce('div',{style:{fontSize:40,marginBottom:16}},'⏳'),
+      ce('div',{style:{fontSize:16,fontWeight:600,color:'#374151',marginBottom:8}},'読み込み中…'),
+      ce('div',{style:{fontSize:13,color:'#9CA3AF'}},getGasUrl()?'GASからデータを取得しています':'しばらくお待ちください')
+    )
+  );
+
+  if(!getGasUrl()) return ce('div',{style:{minHeight:'100vh',display:'flex',alignItems:'center',justifyContent:'center',background:'#F8FAFC',fontFamily:'var(--font-sans)'}},
+    ce('div',{style:{background:'#fff',borderRadius:16,border:'2px solid #E2E8F0',padding:40,maxWidth:520,width:'100%',boxShadow:'0 4px 24px rgba(0,0,0,0.08)'}},
+      ce('div',{style:{fontSize:32,marginBottom:16,textAlign:'center'}},'🔗'),
+      ce('div',{style:{fontSize:20,fontWeight:800,color:'#0F2D52',marginBottom:8,textAlign:'center'}},'初期設定が必要です'),
+      ce('div',{style:{fontSize:14,color:'#6B7280',marginBottom:24,textAlign:'center',lineHeight:1.6}},'HTMLファイルの9行目に GAS URL を設定してください'),
+      ce('div',{style:{background:'#F8FAFC',borderRadius:10,padding:16,fontFamily:'monospace',fontSize:12,color:'#374151',marginBottom:20,lineHeight:2}},
+        ce('div',{style:{color:'#9CA3AF'}},'// studio_verse_shift_app_v2.html の9行目'),
+        ce('div',null,'const HARDCODED_GAS_URL = '),
+        ce('div',{style:{color:'#059669',fontWeight:700}},"  'https://script.google.com/macros/s/xxxxx/exec';")
+      ),
+      ce('div',{style:{background:'#EFF6FF',borderRadius:10,padding:16,fontSize:13,color:'#1E40AF',lineHeight:1.8}},
+        ce('div',{style:{fontWeight:700,marginBottom:6}},'📋 設定手順'),
+        ce('div',null,'① HTMLファイルをテキストエディタで開く'),
+        ce('div',null,'② 9行目の '' にGAS URLを貼り付ける'),
+        ce('div',null,'③ 保存してGitHubに再アップロード'),
+        ce('div',null,'④ どのブラウザからでも自動でGASに繋がります')
+      )
+    )
+  );
 
   const syncColor=syncStatus==='ok'?'#4ADE80':syncStatus==='error'?'#F87171':syncStatus==='syncing'?'#FCD34D':'rgba(255,255,255,0.3)';
   const syncLabel=syncStatus==='ok'?'✓ 同期済 '+lastSync:syncStatus==='error'?'⚠ GAS接続エラー':syncStatus==='syncing'?'↻ 同期中…':'GAS未設定';
