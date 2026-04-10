@@ -252,7 +252,7 @@ function Modal({title,onClose,children,wide}){
 
 // ── STAFF PAGE ──
 function StaffForm({staff,onSave,onClose}){
-  const def={id:'',name:'',title:'',facilities:['kurashiki'],priorityFacility:'kurashiki',roles:['general'],step:1,weeklyMinDays:5,monthlyMinDays:20,availableDays:[0,1,2,3,4,5,6],inputMethod:'希望休',lineId:''};
+  const def={id:'',name:'',title:'',facilities:['kurashiki'],priorityFacility:'kurashiki',roles:['general'],step:1,weeklyMinDays:5,monthlyMinDays:20,availableDays:[0,1,2,3,4,5,6],inputMethod:'希望休',lineId:'',pin:''};
   const[f,setF]=useState(staff||def);
   const set=(k,v)=>setF(p=>({...p,[k]:v}));
   const tog=(k,v)=>setF(p=>({...p,[k]:p[k].includes(v)?p[k].filter(x=>x!==v):[...p[k],v]}));
@@ -265,6 +265,12 @@ function StaffForm({staff,onSave,onClose}){
       ce('div',null,ce(Inp,{label:'月の最低出勤日数',type:'number',value:f.monthlyMinDays,onChange:v=>set('monthlyMinDays',parseInt(v)||0)})),
       ce('div',null,ce(Sel,{label:'希望入力方式',value:f.inputMethod,onChange:v=>set('inputMethod',v),options:[{value:'希望休',label:'希望休方式'},{value:'希望出勤',label:'希望出勤方式'}]})),
       ce('div',{style:{gridColumn:'1/-1'}},ce(Inp,{label:'LINE User ID（エルメから取得）',value:f.lineId,onChange:v=>set('lineId',v),placeholder:'Uxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'})),
+      ce('div',{style:{gridColumn:'1/-1'}},
+        ce('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'0 16px'}},
+          ce('div',null,ce(Inp,{label:'スタッフ用PINコード（4桁）',type:'password',value:f.pin||'',onChange:v=>set('pin',v.replace(/\D/g,'').slice(0,4)),placeholder:'例: 1234'})),
+          ce('div',{style:{paddingTop:20,fontSize:12,color:'#6B7280',lineHeight:1.6}},'スタッフが希望休ページにログインするための4桁の番号です。スタッフに個別に伝えてください。')
+        )
+      ),
     ),
     ce('div',{style:{marginBottom:12}},
       ce('label',{style:{display:'block',fontSize:12,color:'var(--color-text-secondary)',marginBottom:6}},'対応施設'),
@@ -388,7 +394,7 @@ function StaffPage({staff,onSave,onDelete,onImport}){
         ce('table',{style:{width:'100%',borderCollapse:'collapse',fontSize:13,minWidth:640}},
           ce('thead',null,
             ce('tr',{style:{background:'var(--color-background-secondary)'}},
-              ['氏名','肩書','施設','役割','STEP','週/月 最低出勤','入力方式','LINE ID','操作'].map(h=>
+              ['氏名','肩書','施設','役割','STEP','週/月 最低出勤','入力方式','LINE ID','PIN','操作'].map(h=>
                 ce('th',{key:h,style:{padding:'8px 10px',textAlign:'left',fontWeight:500,fontSize:12,color:'var(--color-text-secondary)',borderBottom:'1px solid var(--color-border-tertiary)'}},h)
               )
             )
@@ -403,6 +409,7 @@ function StaffPage({staff,onSave,onDelete,onImport}){
               ce('td',{style:{padding:'8px 10px'}},(s.weeklyMinDays||0)+'日/週・'+(s.monthlyMinDays||0)+'日/月'),
               ce('td',{style:{padding:'8px 10px'}},ce('span',{style:{fontSize:11,background:s.inputMethod==='希望休'?'#FEE2E2':'#EFF6FF',color:s.inputMethod==='希望休'?'#B91C1C':'#1D4ED8',padding:'2px 6px',borderRadius:4}},s.inputMethod)),
               ce('td',{style:{padding:'8px 10px',fontSize:11,color:'#9CA3AF'}},s.lineId?'✓ 設定済':'—'),
+              ce('td',{style:{padding:'8px 10px',fontSize:11,color:s.pin?'#059669':'#9CA3AF'}},s.pin?'✓ 設定済':'未設定'),
               ce('td',{style:{padding:'8px 10px'}},
                 ce('div',{style:{display:'flex',gap:4}},
                   ce(Btn,{small:true,onClick:()=>{setEdit(s);setShow(true);}},'編集'),
@@ -1707,8 +1714,248 @@ function Dashboard({staff,prefs,shifts,sharedSpec,specK,specT,ym}){
   );
 }
 
+
+// ────────────────────────────────────────────
+// スタッフポータル（ログイン＋希望休入力）
+// ────────────────────────────────────────────
+
+function StaffLoginPage({staff,onLogin}){
+  const[pin,setPin]=useState('');
+  const[err,setErr]=useState('');
+  const[loading,setLoading]=useState(false);
+
+  const handleLogin=async()=>{
+    if(pin.length<4){setErr('4桁のPINを入力してください');return;}
+    setLoading(true);setErr('');
+    // PINで照合
+    const found=staff.find(s=>s.pin===pin);
+    if(found){
+      onLogin(found);
+    } else {
+      setErr('PINが正しくありません');
+    }
+    setLoading(false);
+  };
+
+  const handleKey=e=>{if(e.key==='Enter')handleLogin();};
+
+  return ce('div',{style:{minHeight:'100vh',display:'flex',alignItems:'center',justifyContent:'center',
+    background:'linear-gradient(135deg,#0F2D52 0%,#1C508A 100%)',padding:16}},
+    ce('div',{style:{background:'#fff',borderRadius:20,padding:40,maxWidth:360,width:'100%',
+      boxShadow:'0 20px 60px rgba(0,0,0,0.3)',textAlign:'center'}},
+      ce('div',{style:{fontSize:48,marginBottom:8}},'📅'),
+      ce('div',{style:{fontSize:22,fontWeight:800,color:'#0F2D52',marginBottom:4}},'スタジオバース'),
+      ce('div',{style:{fontSize:14,color:'#6B7280',marginBottom:32}},'希望休入力ページ'),
+      ce('div',{style:{marginBottom:16}},
+        ce('label',{style:{display:'block',fontSize:12,fontWeight:700,color:'#374151',marginBottom:8,textAlign:'left'}},'PINコード（4桁）'),
+        ce('input',{
+          type:'password',
+          value:pin,
+          onChange:e=>setPin(e.target.value.replace(/\D/g,'').slice(0,4)),
+          onKeyDown:handleKey,
+          placeholder:'● ● ● ●',
+          maxLength:4,
+          autoFocus:true,
+          style:{width:'100%',boxSizing:'border-box',border:'2px solid #E2E8F0',borderRadius:12,
+            padding:'14px 16px',fontSize:28,textAlign:'center',letterSpacing:'0.3em',
+            outline:'none',color:'#0F2D52',fontWeight:700,
+            transition:'border-color 0.15s'}
+        })
+      ),
+      err&&ce('div',{style:{color:'#EF4444',fontSize:13,marginBottom:12,fontWeight:600}},err),
+      ce('button',{
+        onClick:handleLogin,
+        disabled:loading||pin.length<4,
+        style:{width:'100%',padding:'14px',borderRadius:12,border:'none',
+          background:pin.length===4?'#0F2D52':'#E5E7EB',
+          color:pin.length===4?'#fff':'#9CA3AF',
+          fontSize:15,fontWeight:700,cursor:pin.length===4?'pointer':'not-allowed',
+          transition:'all 0.2s'}
+      },loading?'確認中…':'ログイン'),
+      ce('div',{style:{marginTop:20,fontSize:11,color:'#9CA3AF'}},'PINはマネージャーに確認してください')
+    )
+  );
+}
+
+function StaffPortalPage({staffMember,ym,setYm,prefs,onSavePref,onLogout}){
+  const[yr,mo]=ym.split('-').map(Number);
+  const dim=new Date(yr,mo,0).getDate();
+  const first=new Date(yr,mo-1,1).getDay();
+  const[saved,setSaved]=useState(false);
+
+  const mKey=`${staffMember.id}_${ym}`;
+  const pref=prefs[mKey]||{dates:[],submitted:false};
+  const[dates,setDates]=useState(pref.dates||[]);
+  const[method]=useState(staffMember.inputMethod||'希望休');
+
+  // 月が変わったらdatesをリセット
+  const ymRef=React.useRef(ym);
+  useEffect(()=>{
+    if(ymRef.current!==ym){
+      ymRef.current=ym;
+      const p=prefs[`${staffMember.id}_${ym}`]||{dates:[]};
+      setDates(p.dates||[]);
+      setSaved(false);
+    }
+  },[ym,prefs,staffMember.id]);
+
+  const toggleDate=date=>{
+    setDates(prev=>prev.includes(date)?prev.filter(x=>x!==date):[...prev,date]);
+    setSaved(false);
+  };
+
+  const save=async()=>{
+    await onSavePref(staffMember.id,ym,{
+      dates,submitted:true,submittedAt:new Date().toISOString()
+    });
+    setSaved(true);
+    setTimeout(()=>setSaved(false),3000);
+  };
+
+  const prev=()=>mo===1?(setYm(`${yr-1}-12`)):(setYm(`${yr}-${String(mo-1).padStart(2,'0')}`));
+  const next=()=>mo===12?(setYm(`${yr+1}-01`)):(setYm(`${yr}-${String(mo+1).padStart(2,'0')}`));
+
+  // 締切チェック
+  const deadline=new Date(yr,mo-2,20);
+  const isOver=new Date()>deadline;
+
+  return ce('div',{style:{minHeight:'100vh',background:'#F8FAFC',fontFamily:'var(--font-sans)'}},
+    // ヘッダー
+    ce('div',{style:{background:'#0F2D52',padding:'14px 20px',display:'flex',alignItems:'center',justifyContent:'space-between'}},
+      ce('div',null,
+        ce('div',{style:{color:'#93C5FD',fontSize:11,fontWeight:500}},'スタジオバース'),
+        ce('div',{style:{color:'#fff',fontSize:14,fontWeight:700}},'希望休入力')
+      ),
+      ce('div',{style:{display:'flex',alignItems:'center',gap:12}},
+        ce('div',{style:{textAlign:'right'}},
+          ce('div',{style:{color:'#fff',fontSize:13,fontWeight:700}}),
+          staffMember.name,
+          ce('div',{style:{color:'#93C5FD',fontSize:11}}),
+          staffMember.title||'スタッフ'
+        ),
+        ce('button',{onClick:onLogout,
+          style:{padding:'6px 12px',borderRadius:8,border:'1px solid rgba(255,255,255,0.3)',
+            background:'transparent',color:'rgba(255,255,255,0.7)',fontSize:12,cursor:'pointer',
+            fontFamily:'inherit'}
+        },'ログアウト')
+      )
+    ),
+
+    // コンテンツ
+    ce('div',{style:{maxWidth:500,margin:'0 auto',padding:'20px 16px'}},
+
+      // 月ナビ
+      ce('div',{style:{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:16}},
+        ce('button',{onClick:prev,style:{padding:'8px 14px',borderRadius:8,border:'1px solid #E2E8F0',background:'#fff',cursor:'pointer',fontSize:16}},'◀'),
+        ce('div',{style:{textAlign:'center'}},
+          ce('div',{style:{fontSize:18,fontWeight:800,color:'#0F2D52'}}),`${yr}年${mo}月`,
+          ce('div',{style:{fontSize:12,color:isOver?'#EF4444':'#6B7280',fontWeight:isOver?700:400}},
+            isOver?'⚠ 締切を過ぎています':`締切：${yr}年${mo===1?12:mo-1}月20日`)
+        ),
+        ce('button',{onClick:next,style:{padding:'8px 14px',borderRadius:8,border:'1px solid #E2E8F0',background:'#fff',cursor:'pointer',fontSize:16}},'▶')
+      ),
+
+      // 入力方式バッジ
+      ce('div',{style:{textAlign:'center',marginBottom:14}},
+        ce('span',{style:{
+          background:method==='希望休'?'#FEE2E2':'#DBEAFE',
+          color:method==='希望休'?'#B91C1C':'#1D4ED8',
+          padding:'4px 14px',borderRadius:20,fontSize:12,fontWeight:700
+        }},method==='希望休'?'🔴 希望休方式（休みたい日をタップ）':'🔵 希望出勤方式（出勤できる日をタップ）')
+      ),
+
+      // カレンダー
+      ce('div',{style:{background:'#fff',borderRadius:16,border:'1.5px solid #E2E8F0',padding:16,marginBottom:16,boxShadow:'0 2px 8px rgba(0,0,0,0.06)'}},
+        // 曜日ヘッダ
+        ce('div',{style:{display:'grid',gridTemplateColumns:'repeat(7,1fr)',gap:4,marginBottom:8}},
+          ['日','月','火','水','木','金','土'].map((d,i)=>ce('div',{key:d,style:{
+            textAlign:'center',fontSize:12,fontWeight:700,padding:'4px 0',
+            color:i===0?'#EF4444':i===6?'#3B82F6':'#9CA3AF'
+          }},d))
+        ),
+        // 日付グリッド
+        ce('div',{style:{display:'grid',gridTemplateColumns:'repeat(7,1fr)',gap:4}},
+          Array.from({length:first}).map((_,i)=>ce('div',{key:'e'+i})),
+          Array.from({length:dim},(_,i)=>{
+            const d=i+1;
+            const date=`${yr}-${String(mo).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+            const dow=new Date(yr,mo-1,d).getDay();
+            const sel=dates.includes(date);
+            const isSun=dow===0,isSat=dow===6;
+            // 選択色: 希望休=赤, 希望出勤=青
+            const selBg=method==='希望休'?'#EF4444':'#1D4ED8';
+            const selColor='#fff';
+            const normalColor=isSun?'#EF4444':isSat?'#3B82F6':'#374151';
+            const normalBg=isSun?'#FFF5F5':isSat?'#F0F4FF':'#F9FAFB';
+            return ce('button',{key:d,
+              onClick:()=>!isOver&&toggleDate(date),
+              disabled:isOver,
+              style:{
+                aspectRatio:'1',padding:'2px',borderRadius:10,border:'none',cursor:isOver?'not-allowed':'pointer',
+                background:sel?selBg:normalBg,
+                color:sel?selColor:normalColor,
+                fontSize:14,fontWeight:sel?800:500,
+                transition:'all 0.15s',
+                boxShadow:sel?'0 2px 6px rgba(0,0,0,0.2)':'none',
+                transform:sel?'scale(1.05)':'scale(1)',
+                opacity:isOver?0.6:1
+              }
+            },d);
+          })
+        )
+      ),
+
+      // 選択状況サマリー
+      ce('div',{style:{background:'#fff',borderRadius:12,border:'1.5px solid #E2E8F0',padding:'12px 16px',marginBottom:16}},
+        ce('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:dates.length>0?8:0}},
+          ce('div',{style:{fontSize:13,color:'#374151',fontWeight:600}},
+            method==='希望休'
+              ?`希望休：${dates.length}日選択中`
+              :`希望出勤：${dates.length}日選択中`
+          ),
+          dates.length>0&&ce('button',{
+            onClick:()=>{setDates([]);setSaved(false);},
+            style:{fontSize:11,color:'#6B7280',background:'#F3F4F6',border:'none',borderRadius:6,padding:'3px 8px',cursor:'pointer'}
+          },'クリア')
+        ),
+        dates.length>0&&ce('div',{style:{display:'flex',flexWrap:'wrap',gap:4}},
+          dates.sort().map(d=>ce('span',{key:d,style:{
+            background:method==='希望休'?'#FEE2E2':'#DBEAFE',
+            color:method==='希望休'?'#B91C1C':'#1D4ED8',
+            padding:'2px 8px',borderRadius:6,fontSize:11,fontWeight:600
+          }},`${parseInt(d.slice(5,7))}/${parseInt(d.slice(8,10))}日`))
+        )
+      ),
+
+      // 保存ボタン
+      !isOver&&ce('button',{
+        onClick:save,
+        style:{width:'100%',padding:'16px',borderRadius:14,border:'none',
+          background:'#0F2D52',color:'#fff',fontSize:16,fontWeight:700,cursor:'pointer',
+          boxShadow:'0 4px 14px rgba(15,45,82,0.3)',transition:'all 0.2s',
+          marginBottom:8}
+      },saved?'✓ 保存しました！':'💾 希望を保存する'),
+      saved&&ce('div',{style:{textAlign:'center',fontSize:13,color:'#059669',fontWeight:600,
+        animation:'fadeIn 0.3s ease',marginBottom:8}},
+        '管理者に送信されました'),
+
+      // 既に提出済みバッジ
+      pref.submitted&&ce('div',{style:{textAlign:'center',padding:'8px',borderRadius:8,
+        background:'#F0FDF4',border:'1px solid #86EFAC',fontSize:12,color:'#166534',marginBottom:8}},
+        `✓ 提出済み（${pref.submittedAt?new Date(pref.submittedAt).toLocaleDateString('ja-JP'):''}）`
+      )
+    ),
+    ce('style',null,'@keyframes fadeIn{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:translateY(0)}}')
+  );
+}
+
 // ── APP ──
 function App(){
+  // URLで ?staff=1 の場合はスタッフポータルモードで起動
+  const isStaffMode=new URLSearchParams(window.location.search).get('staff')==='1'||
+                    window.location.hash==='#staff';
+  const[mode,setMode]=useState(isStaffMode?'staff_login':'admin'); // admin|staff_login|staff_portal
+  const[loggedInStaff,setLoggedInStaff]=useState(null);
   const[page,setPage]=useState('dashboard');
   const[staff,setStaff]=useState([]);
   const[sharedSpec,setSharedSpec]=useState({});
@@ -1828,6 +2075,19 @@ function App(){
     )
   );
 
+  // スタッフポータルモード分岐
+  if(mode==='staff_login'){
+    return ce(StaffLoginPage,{staff,onLogin:s=>{setLoggedInStaff(s);setMode('staff_portal');}});
+  }
+  if(mode==='staff_portal'&&loggedInStaff){
+    return ce(StaffPortalPage,{
+      staffMember:loggedInStaff,ym,setYm,prefs,
+      onSavePref:setPref,
+      onLogout:()=>{setLoggedInStaff(null);setMode('staff_login');}
+    });
+  }
+
+
   if(!getGasUrl()) return ce('div',{style:{minHeight:'100vh',display:'flex',alignItems:'center',justifyContent:'center',background:'#F8FAFC',fontFamily:'var(--font-sans)'}},
     ce('div',{style:{background:'#fff',borderRadius:16,border:'2px solid #E2E8F0',padding:40,maxWidth:520,width:'100%',boxShadow:'0 4px 24px rgba(0,0,0,0.08)'}},
       ce('div',{style:{fontSize:32,marginBottom:16,textAlign:'center'}},'🔗'),
@@ -1841,7 +2101,7 @@ function App(){
       ce('div',{style:{background:'#EFF6FF',borderRadius:10,padding:16,fontSize:13,color:'#1E40AF',lineHeight:1.8}},
         ce('div',{style:{fontWeight:700,marginBottom:6}},'📋 設定手順'),
         ce('div',null,'① HTMLファイルをテキストエディタで開く'),
-        ce('div',null,'② 9行目の \u0027\u0027 にGAS URLを貼り付ける'),
+        ce('div',null,'② 9行目の \'\' にGAS URLを貼り付ける'),
         ce('div',null,'③ 保存してGitHubに再アップロード'),
         ce('div',null,'④ どのブラウザからでも自動でGASに繋がります')
       )
@@ -1861,7 +2121,7 @@ function App(){
         nav.map(n=>ce('button',{key:n.id,onClick:()=>setPage(n.id),style:{display:'flex',alignItems:'center',gap:8,width:'100%',padding:'9px 14px',background:page===n.id?'rgba(255,255,255,0.12)':'transparent',border:'none',cursor:'pointer',color:page===n.id?'#fff':'rgba(255,255,255,0.65)',fontSize:12,fontWeight:page===n.id?500:400,fontFamily:'inherit',textAlign:'left',borderLeft:page===n.id?'3px solid #60A5FA':'3px solid transparent',transition:'all .15s'}},
           ce('span',{style:{fontSize:14}},n.ic),n.l))
       ),
-      ce('div',{style:{padding:'8px 12px',borderTop:'1px solid rgba(255,255,255,0.1)'}},ce('div',{style:{fontSize:9,color:syncColor,marginBottom:3,lineHeight:1.4}},syncLabel),getGasUrl()&&ce('button',{onClick:()=>syncFromGas(),style:{fontSize:9,color:'rgba(255,255,255,0.5)',background:'transparent',border:'1px solid rgba(255,255,255,0.2)',borderRadius:4,padding:'2px 8px',cursor:'pointer',fontFamily:'inherit',width:'100%'}},'🔄 今すぐ同期'))
+      ce('div',{style:{padding:'6px 10px',borderTop:'1px solid rgba(255,255,255,0.08)'}},ce('button',{onClick:()=>setMode('staff_login'),style:{width:'100%',padding:'7px 10px',borderRadius:8,border:'1px solid rgba(255,255,255,0.2)',background:'rgba(255,255,255,0.06)',color:'rgba(255,255,255,0.75)',fontSize:12,cursor:'pointer',fontFamily:'inherit',fontWeight:500,display:'flex',alignItems:'center',gap:6}},'👤 スタッフ入力ページへ')),ce('div',{style:{padding:'8px 12px',borderTop:'1px solid rgba(255,255,255,0.1)'}},ce('div',{style:{fontSize:9,color:syncColor,marginBottom:3,lineHeight:1.4}},syncLabel),getGasUrl()&&ce('button',{onClick:()=>syncFromGas(),style:{fontSize:9,color:'rgba(255,255,255,0.5)',background:'transparent',border:'1px solid rgba(255,255,255,0.2)',borderRadius:4,padding:'2px 8px',cursor:'pointer',fontFamily:'inherit',width:'100%'}},'🔄 今すぐ同期'))
     ),
     ce('div',{style:{flex:1,overflow:'auto',background:'var(--color-background-tertiary)'}},
       ce('div',{style:{maxWidth:1100,padding:20}},
