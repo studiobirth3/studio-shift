@@ -8,6 +8,11 @@
 // 例: 'https://script.google.com/macros/s/xxxxxxxxxx/exec'
 const HARDCODED_GAS_URL = 'https://script.google.com/macros/s/AKfycbyrGBlG-xQPiUMjj4H1VoRAp1Pwysp_MxID-rv-ht6Smn2miEq5FRpM4m0R4PjSYGIE/exec';
 // ============================================================
+// ★ 管理者パスワード直接埋め込み（任意）
+// 空のままにすれば初回ログイン時にパスワードを設定できます
+const HARDCODED_ADMIN_PW = '';
+// ============================================================
+// ============================================================
 
 const {useState,useEffect,useMemo,useCallback,useRef}=React;
 const ce=React.createElement;
@@ -1701,6 +1706,36 @@ function SettingsPage({syncFromGas,syncStatus}){
         testResult.msg)
     ),
 
+    // パスワード変更セクション
+    ce('div',{style:{border:'1px solid var(--color-border-tertiary)',borderRadius:10,padding:20,maxWidth:580,marginBottom:16}},
+      ce('div',{style:{fontWeight:700,fontSize:14,marginBottom:4,color:'#0F2D52'}},'🔐 管理者パスワード変更'),
+      ce('div',{style:{fontSize:12,color:'#6B7280',marginBottom:14}},'現在のパスワードを確認してから新しいパスワードを設定します'),
+      ce('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12,marginBottom:12}},
+        ce('div',null,
+          ce('label',{style:{display:'block',fontSize:12,color:'var(--color-text-secondary)',marginBottom:4,fontWeight:600}},'現在のパスワード'),
+          ce('input',{type:'password',value:s.currentPw||'',onChange:e=>set('currentPw',e.target.value),
+            style:{width:'100%',boxSizing:'border-box',border:'1px solid var(--color-border-secondary)',
+              borderRadius:6,padding:'7px 10px',fontSize:13,background:'var(--color-background-primary)',fontFamily:'inherit'}})
+        ),
+        ce('div',null,
+          ce('label',{style:{display:'block',fontSize:12,color:'var(--color-text-secondary)',marginBottom:4,fontWeight:600}},'新しいパスワード'),
+          ce('input',{type:'password',value:s.newPw||'',onChange:e=>set('newPw',e.target.value),
+            style:{width:'100%',boxSizing:'border-box',border:'1px solid var(--color-border-secondary)',
+              borderRadius:6,padding:'7px 10px',fontSize:13,background:'var(--color-background-primary)',fontFamily:'inherit'}})
+        )
+      ),
+      ce('div',{style:{display:'flex',gap:8,alignItems:'center'}},
+        ce(Btn,{onClick:()=>{
+          const saved=getAdminPw();
+          if(saved&&s.currentPw!==saved){alert('現在のパスワードが正しくありません');return;}
+          if(!s.newPw||s.newPw.length<4){alert('新しいパスワードは4文字以上で入力してください');return;}
+          localStorage.setItem(ADMIN_PW_KEY,s.newPw);
+          set('currentPw','');set('newPw','');
+          alert('パスワードを変更しました');
+        }},'パスワード変更')
+      )
+    ),
+
     // LINE設定セクション
     ce('div',{style:{border:'1px solid var(--color-border-tertiary)',borderRadius:10,padding:20,maxWidth:580}},
       ce('div',{style:{fontWeight:700,fontSize:14,marginBottom:14,paddingBottom:10,borderBottom:'1px solid var(--color-border-tertiary)'}},'📱 LINE Messaging API'),
@@ -2030,12 +2065,98 @@ function StaffPortalPage({staffMember,ym,setYm,prefs,onSavePref,onLogout}){
   );
 }
 
+
+// ────────────────────────────────────────────
+// 管理者ログイン画面
+// ────────────────────────────────────────────
+const ADMIN_PW_KEY='sv_admin_pw'; // localStorageに保存するキー
+
+function getAdminPw(){
+  // GAS URLと同じく、HTMLに直接埋め込める（空なら設定画面で設定）
+  return HARDCODED_ADMIN_PW||localStorage.getItem(ADMIN_PW_KEY)||'';
+}
+
+function AdminLoginPage({onLogin}){
+  const[pw,setPw]=useState('');
+  const[err,setErr]=useState('');
+  const[show,setShow]=useState(false);
+  const handleLogin=()=>{
+    const saved=getAdminPw();
+    if(!saved){
+      // パスワード未設定の場合は初回設定モード
+      if(pw.length<4){setErr('4文字以上で設定してください');return;}
+      localStorage.setItem(ADMIN_PW_KEY,pw);
+      onLogin();
+      return;
+    }
+    if(pw===saved){onLogin();}
+    else{setErr('パスワードが正しくありません');setPw('');}
+  };
+  const handleKey=e=>{if(e.key==='Enter')handleLogin();};
+  const isSetup=!getAdminPw();
+
+  return ce('div',{style:{minHeight:'100vh',display:'flex',alignItems:'center',justifyContent:'center',
+    background:'linear-gradient(135deg,#0A1628 0%,#0F2D52 50%,#1C508A 100%)',padding:16}},
+    ce('div',{style:{background:'#fff',borderRadius:20,padding:40,maxWidth:380,width:'100%',
+      boxShadow:'0 24px 64px rgba(0,0,0,0.4)',textAlign:'center'}},
+      ce('div',{style:{fontSize:44,marginBottom:8}},'🔐'),
+      ce('div',{style:{fontSize:22,fontWeight:800,color:'#0F2D52',marginBottom:4}},'スタジオバース'),
+      ce('div',{style:{fontSize:14,color:'#6B7280',marginBottom:28}}),
+        isSetup?'管理者パスワードを設定してください':'管理者ログイン',
+      ce('div',{style:{marginBottom:16,textAlign:'left'}},
+        ce('label',{style:{display:'block',fontSize:12,fontWeight:700,color:'#374151',marginBottom:8}}),
+          isSetup?'新しいパスワード':'パスワード',
+        ce('div',{style:{position:'relative'}},
+          ce('input',{
+            type:show?'text':'password',
+            value:pw,
+            onChange:e=>setPw(e.target.value),
+            onKeyDown:handleKey,
+            placeholder:isSetup?'4文字以上で設定':'パスワードを入力',
+            autoFocus:true,
+            style:{width:'100%',boxSizing:'border-box',border:'2px solid #E2E8F0',borderRadius:12,
+              padding:'13px 44px 13px 16px',fontSize:16,outline:'none',
+              color:'#0F2D52',fontFamily:'inherit',transition:'border-color 0.15s'}
+          }),
+          ce('button',{
+            onClick:()=>setShow(s=>!s),
+            style:{position:'absolute',right:12,top:'50%',transform:'translateY(-50%)',
+              background:'none',border:'none',cursor:'pointer',fontSize:18,color:'#9CA3AF',padding:4}
+          },show?'🙈':'👁')
+        )
+      ),
+      err&&ce('div',{style:{color:'#EF4444',fontSize:13,marginBottom:12,fontWeight:600,
+        background:'#FFF5F5',borderRadius:8,padding:'8px 12px'}},err),
+      ce('button',{
+        onClick:handleLogin,
+        disabled:!pw,
+        style:{width:'100%',padding:'14px',borderRadius:12,border:'none',
+          background:pw?'#0F2D52':'#E5E7EB',
+          color:pw?'#fff':'#9CA3AF',
+          fontSize:15,fontWeight:700,cursor:pw?'pointer':'not-allowed',
+          transition:'all 0.2s',marginBottom:12}
+      },isSetup?'パスワードを設定してログイン':'ログイン'),
+      isSetup&&ce('div',{style:{fontSize:11,color:'#9CA3AF',lineHeight:1.6}}),
+        '設定したパスワードは次回以降の',ce('br',null),'ログインに使用されます'
+    )
+  );
+}
+
 // ── APP ──
 function App(){
-  // URLで ?staff=1 の場合はスタッフポータルモードで起動
-  const isStaffMode=new URLSearchParams(window.location.search).get('staff')==='1'||
+  // URLで ?staff= が含まれる場合はスタッフポータルモードで起動
+  const isStaffMode=new URLSearchParams(window.location.search).has('staff')||
                     window.location.hash==='#staff';
-  const[mode,setMode]=useState(isStaffMode?'staff_login':'admin'); // admin|staff_login|staff_portal
+  const[mode,setMode]=useState(isStaffMode?'staff_login':'admin');
+  // 管理者認証状態（スタッフモードは認証不要）
+  const[adminAuthed,setAdminAuthed]=useState(()=>{
+    // セッション中はsessionStorageで認証維持
+    return sessionStorage.getItem('sv_admin_authed')==='1';
+  });
+  const handleAdminLogin=()=>{
+    sessionStorage.setItem('sv_admin_authed','1');
+    setAdminAuthed(true);
+  };
   const[loggedInStaff,setLoggedInStaff]=useState(null);
   const[page,setPage]=useState('dashboard');
   const[staff,setStaff]=useState([]);
@@ -2192,6 +2313,11 @@ function App(){
   }
 
 
+  // 管理者認証チェック（スタッフモードはスキップ）
+  if(!isStaffMode&&mode==='admin'&&!adminAuthed){
+    return ce(AdminLoginPage,{onLogin:handleAdminLogin});
+  }
+
   if(!getGasUrl()) return ce('div',{style:{minHeight:'100vh',display:'flex',alignItems:'center',justifyContent:'center',background:'#F8FAFC',fontFamily:'var(--font-sans)'}},
     ce('div',{style:{background:'#fff',borderRadius:16,border:'2px solid #E2E8F0',padding:40,maxWidth:520,width:'100%',boxShadow:'0 4px 24px rgba(0,0,0,0.08)'}},
       ce('div',{style:{fontSize:32,marginBottom:16,textAlign:'center'}},'🔗'),
@@ -2225,7 +2351,22 @@ function App(){
         nav.map(n=>ce('button',{key:n.id,onClick:()=>setPage(n.id),style:{display:'flex',alignItems:'center',gap:8,width:'100%',padding:'9px 14px',background:page===n.id?'rgba(255,255,255,0.12)':'transparent',border:'none',cursor:'pointer',color:page===n.id?'#fff':'rgba(255,255,255,0.65)',fontSize:12,fontWeight:page===n.id?500:400,fontFamily:'inherit',textAlign:'left',borderLeft:page===n.id?'3px solid #60A5FA':'3px solid transparent',transition:'all .15s'}},
           ce('span',{style:{fontSize:14}},n.ic),n.l))
       ),
-      ce('div',{style:{padding:'6px 10px',borderTop:'1px solid rgba(255,255,255,0.08)'}},ce('button',{onClick:()=>setMode('staff_login'),style:{width:'100%',padding:'7px 10px',borderRadius:8,border:'1px solid rgba(255,255,255,0.2)',background:'rgba(255,255,255,0.06)',color:'rgba(255,255,255,0.75)',fontSize:12,cursor:'pointer',fontFamily:'inherit',fontWeight:500,display:'flex',alignItems:'center',gap:6}},'👤 スタッフ入力ページへ')),ce('div',{style:{padding:'8px 12px',borderTop:'1px solid rgba(255,255,255,0.1)'}},ce('div',{style:{fontSize:9,color:syncColor,marginBottom:3,lineHeight:1.4}},syncLabel),getGasUrl()&&ce('button',{onClick:()=>syncFromGas(),style:{fontSize:9,color:'rgba(255,255,255,0.5)',background:'transparent',border:'1px solid rgba(255,255,255,0.2)',borderRadius:4,padding:'2px 8px',cursor:'pointer',fontFamily:'inherit',width:'100%'}},'🔄 今すぐ同期'))
+      ce('div',{style:{padding:'6px 10px',borderTop:'1px solid rgba(255,255,255,0.08)'}},
+        ce('button',{
+          onClick:()=>{
+            if(confirm('管理者からログアウトしますか？')){
+              sessionStorage.removeItem('sv_admin_authed');
+              setAdminAuthed(false);
+            }
+          },
+          style:{width:'100%',padding:'6px 10px',borderRadius:8,
+            border:'1px solid rgba(255,255,255,0.15)',
+            background:'rgba(239,68,68,0.12)',color:'rgba(255,200,200,0.85)',
+            fontSize:11,cursor:'pointer',fontFamily:'inherit',
+            display:'flex',alignItems:'center',gap:5,marginBottom:4}
+        },'🔓 ログアウト')
+      ),
+      ce('div',{style:{padding:'6px 10px',borderTop:'none'}},ce('button',{onClick:()=>setMode('staff_login'),style:{width:'100%',padding:'7px 10px',borderRadius:8,border:'1px solid rgba(255,255,255,0.2)',background:'rgba(255,255,255,0.06)',color:'rgba(255,255,255,0.75)',fontSize:12,cursor:'pointer',fontFamily:'inherit',fontWeight:500,display:'flex',alignItems:'center',gap:6}},'👤 スタッフ入力ページへ')),ce('div',{style:{padding:'8px 12px',borderTop:'1px solid rgba(255,255,255,0.1)'}},ce('div',{style:{fontSize:9,color:syncColor,marginBottom:3,lineHeight:1.4}},syncLabel),getGasUrl()&&ce('button',{onClick:()=>syncFromGas(),style:{fontSize:9,color:'rgba(255,255,255,0.5)',background:'transparent',border:'1px solid rgba(255,255,255,0.2)',borderRadius:4,padding:'2px 8px',cursor:'pointer',fontFamily:'inherit',width:'100%'}},'🔄 今すぐ同期'))
     ),
     ce('div',{style:{flex:1,overflow:'auto',background:'var(--color-background-tertiary)'}},
       ce('div',{style:{maxWidth:1100,padding:20}},
