@@ -160,6 +160,30 @@ async function gasLoadAll(){
   if(!r||!r.ok)return null;
   return r.data;
 }
+// 希望休1件だけGASから取得
+async function gasGetPref(staffId,ym){
+  const key='sv_pref:'+staffId+'_'+ym;
+  const r=await gasGet({action:'get',key});
+  if(!r||!r.ok||!r.value)return null;
+  try{return JSON.parse(r.value);}catch{return null;}
+}
+// 希望休1件だけGASへ保存（全体を上書きしない）
+async function gasSetPref(staffId,ym,data,by){
+  const key='sv_pref:'+staffId+'_'+ym;
+  return await gasPost({action:'set',key,value:JSON.stringify(data),updatedBy:by||'staff'});
+}
+// GASから全希望休を取得してローカルのprefsオブジェクトに変換
+async function gasLoadAllPrefs(){
+  // sv_pref:* のキー一覧を取得（GASのgetAllで返ってくるkeyの中からフィルタ）
+  const r=await gasGet({action:'getAll'});
+  if(!r||!r.ok)return null;
+  const result={};
+  // 既存のsv_prefsも読む（後方互換）
+  if(r.data&&r.data['sv_prefs']){
+    try{const p=JSON.parse(r.data['sv_prefs']);Object.assign(result,p);}catch{}
+  }
+  return result;
+}
 function lsGet(k,fb){try{const r=localStorage.getItem(k);return r?JSON.parse(r):fb;}catch{return fb;}}
 function lsSet(k,v){try{localStorage.setItem(k,JSON.stringify(v));}catch{}}
 async function stLoad(k,fb){return lsGet(k,fb);}
@@ -1013,7 +1037,7 @@ function TimelinePage({ym,setYm,staff,shiftData,sharedSpec,specK,specT,onSaveShi
   );
 }
 // ── PREFS PAGE ──
-function PrefsPage({ym,setYm,staff,prefs,onSetPref}){
+function PrefsPage({ym,setYm,staff,prefs,onSetPref,onRefreshPrefs}){
   const[yr,mo]=ym.split('-').map(Number);
   const dim=new Date(yr,mo,0).getDate();
   const first=new Date(yr,mo-1,1).getDay();
@@ -1037,16 +1061,42 @@ function PrefsPage({ym,setYm,staff,prefs,onSetPref}){
   };
   const tog=(date)=>setDates(p=>p.includes(date)?p.filter(x=>x!==date):[...p,date]);
 
+  const[refreshing,setRefreshing]=useState(false);
+  const[lastRefresh,setLastRefresh]=useState('');
+  const refresh=async()=>{
+    setRefreshing(true);
+    const gasData=await gasLoadAll();
+    if(gasData){
+      const pBase=(()=>{try{return gasData['sv_prefs']?JSON.parse(gasData['sv_prefs']):{}}catch{return {};}})();
+      const pMerged={...pBase};
+      Object.keys(gasData).forEach(k=>{
+        if(k.startsWith('sv_pref:')){
+          const pk=k.slice(8);
+          try{if(gasData[k])pMerged[pk]=JSON.parse(gasData[k]);}catch{}
+        }
+      });
+      // 親のprefsを直接更新するためonRefreshを使う
+      if(onRefreshPrefs) onRefreshPrefs(pMerged);
+      lsSet('sv_prefs',pMerged);
+      setLastRefresh(new Date().toLocaleTimeString('ja-JP'));
+    }
+    setRefreshing(false);
+  };
+
   return ce('div',null,
     ce('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}},
       ce('div',null,
         ce('h2',{style:{fontSize:18,fontWeight:600,margin:0}},'希望休管理'),
         ce('div',{style:{fontSize:12,color:isOver&&overdue.length>0?'#B91C1C':'var(--color-text-secondary)',marginTop:2}},
           `締切：${yr}年${mo===1?12:mo-1}月20日 `,
-          isOver&&overdue.length>0&&`| ⚠️ ${overdue.length}名未提出`
+          isOver&&overdue.length>0&&`| ⚠️ ${overdue.length}名未提出`,
+          lastRefresh&&` | 最終更新 ${lastRefresh}`
         )
       ),
-      ce('div',{style:{display:'flex',gap:8}},
+      ce('div',{style:{display:'flex',gap:8,alignItems:'center'}},
+        ce('button',{onClick:refresh,disabled:refreshing,
+          style:{padding:'5px 12px',borderRadius:6,border:'1px solid #059669',background:refreshing?'#F0FDF4':'#F0FDF4',color:'#059669',cursor:refreshing?'not-allowed':'pointer',fontSize:12,fontWeight:600,fontFamily:'inherit'}},
+          refreshing?'⏳ 更新中…':'🔄 スタッフ入力を反映'),
         ce('button',{onClick:prev,style:{padding:'4px 10px',borderRadius:6,border:'1px solid var(--color-border-secondary)',background:'transparent',cursor:'pointer'}},'◀'),
         ce('span',{style:{fontSize:15,fontWeight:600,minWidth:90,textAlign:'center'}},`${yr}年${mo}月`),
         ce('button',{onClick:next,style:{padding:'4px 10px',borderRadius:6,border:'1px solid var(--color-border-secondary)',background:'transparent',cursor:'pointer'}},'▶')
@@ -1788,28 +1838,48 @@ function StaffPortalPage({staffMember,ym,setYm,prefs,onSavePref,onLogout}){
   const[dates,setDates]=useState(pref.dates||[]);
   const[method]=useState(staffMember.inputMethod||'希望休');
 
-  // 月が変わったらdatesをリセット
+  // 月が変わったらGASから最新データを取得してdatesをセット
   const ymRef=React.useRef(ym);
+  const[loading,setLoading]=useState(false);
   useEffect(()=>{
-    if(ymRef.current!==ym){
-      ymRef.current=ym;
-      const p=prefs[`${staffMember.id}_${ym}`]||{dates:[]};
-      setDates(p.dates||[]);
+    const loadLatest=async()=>{
+      setLoading(true);
+      // GASから最新の自分のprefを取得
+      const latest=await gasGetPref(staffMember.id,ym);
+      if(latest){
+        setDates(latest.dates||[]);
+      } else {
+        // フォールバック: propsから
+        const p=prefs[`${staffMember.id}_${ym}`]||{dates:[]};
+        setDates(p.dates||[]);
+      }
+      setLoading(false);
       setSaved(false);
+    };
+    if(ymRef.current!==ym||ymRef.current===ym){
+      ymRef.current=ym;
+      loadLatest();
     }
-  },[ym,prefs,staffMember.id]);
+  },[ym,staffMember.id]);
 
   const toggleDate=date=>{
     setDates(prev=>prev.includes(date)?prev.filter(x=>x!==date):[...prev,date]);
     setSaved(false);
   };
 
+  const[saving,setSaving]=useState(false);
   const save=async()=>{
-    await onSavePref(staffMember.id,ym,{
-      dates,submitted:true,submittedAt:new Date().toISOString()
-    });
-    setSaved(true);
-    setTimeout(()=>setSaved(false),3000);
+    setSaving(true);
+    try{
+      const data={dates,submitted:true,submittedAt:new Date().toISOString()};
+      await onSavePref(staffMember.id,ym,data);
+      setSaved(true);
+      setTimeout(()=>setSaved(false),4000);
+    }catch(e){
+      alert('保存に失敗しました。通信を確認してもう一度お試しください。');
+    }finally{
+      setSaving(false);
+    }
   };
 
   const prev=()=>mo===1?(setYm(`${yr-1}-12`)):(setYm(`${yr}-${String(mo-1).padStart(2,'0')}`));
@@ -1818,6 +1888,14 @@ function StaffPortalPage({staffMember,ym,setYm,prefs,onSavePref,onLogout}){
   // 締切チェック
   const deadline=new Date(yr,mo-2,20);
   const isOver=new Date()>deadline;
+
+  if(loading) return ce('div',{style:{minHeight:'100vh',display:'flex',alignItems:'center',justifyContent:'center',
+    background:'linear-gradient(135deg,#0F2D52 0%,#1C508A 100%)'}},
+    ce('div',{style:{textAlign:'center',color:'#fff'}},
+      ce('div',{style:{fontSize:32,marginBottom:12}},'📅'),
+      ce('div',{style:{fontSize:15,fontWeight:600}},'データを読み込み中…')
+    )
+  );
 
   return ce('div',{style:{minHeight:'100vh',background:'#F8FAFC',fontFamily:'var(--font-sans)'}},
     // ヘッダー
@@ -1930,11 +2008,14 @@ function StaffPortalPage({staffMember,ym,setYm,prefs,onSavePref,onLogout}){
       // 保存ボタン
       !isOver&&ce('button',{
         onClick:save,
+        disabled:saving,
         style:{width:'100%',padding:'16px',borderRadius:14,border:'none',
-          background:'#0F2D52',color:'#fff',fontSize:16,fontWeight:700,cursor:'pointer',
+          background:saving?'#6B7280':saved?'#059669':'#0F2D52',
+          color:'#fff',fontSize:16,fontWeight:700,
+          cursor:saving?'not-allowed':'pointer',
           boxShadow:'0 4px 14px rgba(15,45,82,0.3)',transition:'all 0.2s',
           marginBottom:8}
-      },saved?'✓ 保存しました！':'💾 希望を保存する'),
+      },saving?'⏳ 保存中…':saved?'✓ 保存しました！':'💾 希望を保存する'),
       saved&&ce('div',{style:{textAlign:'center',fontSize:13,color:'#059669',fontWeight:600,
         animation:'fadeIn 0.3s ease',marginBottom:8}},
         '管理者に送信されました'),
@@ -1979,12 +2060,24 @@ function App(){
       const c=parse(gasData['sv_calendar'],{});
       const ck=parse(gasData['sv_calK'],{});
       const ct=parse(gasData['sv_calT'],{});
-      const p=parse(gasData['sv_prefs'],{});
       const sh=parse(gasData['sv_shifts'],{});
-      setStaff(s);setSharedSpec(c);setSpecK(ck);setSpecT(ct);setPrefs(p);setShifts(sh);
-      // ローカルキャッシュ更新
+
+      // 希望休：sv_prefsの既存データ＋sv_pref:*の個別キーを両方マージ
+      const pBase=parse(gasData['sv_prefs'],{});
+      // 個別キー（sv_pref:staffId_ym形式）をマージ
+      const pMerged={...pBase};
+      if(gasData){
+        Object.keys(gasData).forEach(k=>{
+          if(k.startsWith('sv_pref:')){
+            const prefKey=k.slice(8); // "sv_pref:"を除いたstaffId_ym
+            try{const v=gasData[k];if(v)pMerged[prefKey]=JSON.parse(v);}catch{}
+          }
+        });
+      }
+
+      setStaff(s);setSharedSpec(c);setSpecK(ck);setSpecT(ct);setPrefs(pMerged);setShifts(sh);
       lsSet('sv_staff',s);lsSet('sv_calendar',c);lsSet('sv_calK',ck);
-      lsSet('sv_calT',ct);lsSet('sv_prefs',p);lsSet('sv_shifts',sh);
+      lsSet('sv_calT',ct);lsSet('sv_prefs',pMerged);lsSet('sv_shifts',sh);
       setSyncStatus('ok');
       setLastSync(new Date().toLocaleTimeString('ja-JP'));
     }else{
@@ -2050,7 +2143,18 @@ function App(){
     else{setSpecT(prev=>{const next={...prev};val?next[date]=val:delete next[date];stSave('sv_calT',next);return next;});}
   },[]);
   const setPref=useCallback(async(staffId,month,data)=>{
-    setPrefs(prev=>{const next={...prev,[`${staffId}_${month}`]:data};stSave('sv_prefs',next);return next;});
+    // ローカルStateを更新
+    setPrefs(prev=>{
+      const next={...prev,[`${staffId}_${month}`]:data};
+      lsSet('sv_prefs',next); // ローカルキャッシュも更新
+      return next;
+    });
+    // GASには個別キーで保存（他スタッフのデータを上書きしない）
+    const url=getGasUrl();
+    if(url){
+      const by=lsGet('sv_settings',{}).operatorName||staffId;
+      gasSetPref(staffId,month,data,by).catch(()=>{});
+    }
   },[]);
   const saveShifts=useCallback(async(month,data)=>{
     setShifts(prev=>{const next={...prev,[month]:data};stSave('sv_shifts',next);return next;});
@@ -2129,7 +2233,7 @@ function App(){
         page==='staff'&&ce(StaffPage,{staff,onSave:saveStaff,onDelete:delStaff,onImport:handleImport}),
         page==='calendar'&&ce(CalendarPage,{ym,setYm,sharedSpec,specK,specT,onSetShared:setShared,onSetFac:setFac}),
         page==='timeline'&&ce(TimelinePage,{ym,setYm,staff,shiftData:shifts[ym],sharedSpec,specK,specT,onSaveShifts:saveShifts,shifts}),
-        page==='prefs'&&ce(PrefsPage,{ym,setYm,staff,prefs,onSetPref:setPref}),
+        page==='prefs'&&ce(PrefsPage,{ym,setYm,staff,prefs,onSetPref:setPref,onRefreshPrefs:p=>setPrefs(p)}),
         page==='shifts'&&ce(ShiftsPage,{ym,setYm,staff,sharedSpec,specK,specT,prefs,shifts,onSaveShifts:saveShifts}),
         page==='settings'&&ce(SettingsPage,{syncFromGas,syncStatus})
       )
