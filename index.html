@@ -2289,13 +2289,18 @@ function App(){
   },[]);
 
   const saveStaff=useCallback(async s=>{
-    let next;
-    setStaff(prev=>{next=prev.find(x=>x.id===s.id)?prev.map(x=>x.id===s.id?s:x):[...prev,s];return next;});
-    setTimeout(()=>stSave('sv_staff',next||[]),0);
+    setStaff(prev=>{
+      const next=prev.find(x=>x.id===s.id)?prev.map(x=>x.id===s.id?s:x):[...prev,s];
+      stSave('sv_staff',next); // setStateのコールバック内で確実に最新値を保存
+      return next;
+    });
   },[]);
   const delStaff=useCallback(async id=>{
-    let next;setStaff(prev=>{next=prev.filter(x=>x.id!==id);return next;});
-    setTimeout(()=>stSave('sv_staff',next||[]),0);
+    setStaff(prev=>{
+      const next=prev.filter(x=>x.id!==id);
+      stSave('sv_staff',next);
+      return next;
+    });
   },[]);
 
   const handleImport=useCallback(async(type,data)=>{
@@ -2303,30 +2308,39 @@ function App(){
       setStaff(prev=>{
         const next=[...prev];
         data.forEach(ns=>{const idx=next.findIndex(s=>s.name===ns.name);if(idx>=0)next[idx]={...next[idx],...ns,id:next[idx].id};else next.push(ns);});
-        stSave('sv_staff',next);return next;
+        stSave('sv_staff',next);
+        return next;
       });
+      alert(`スタッフをインポートしました。`);
     }else{
       // LINE ID import（正規化済みデータ {name, uid} を使用）
+      // setStateのコールバック外でアラートを出すため変数を使う
+      let updatedCount=0;
+      let newStaff=null;
       setStaff(prev=>{
         let updated=0;
         const next=prev.map(s=>{
-          // 完全一致→スペース除去一致→部分一致の順で照合
           const match=data.find(r=>{
             if(!r.uid)return false;
-            const rn=r.name||'';
-            if(rn===s.name)return true;
-            if(rn.replace(/\s/g,'')===s.name.replace(/\s/g,''))return true;
+            const rn=(r.name||'').trim();
+            const sn=s.name.trim();
+            if(rn===sn)return true;
+            if(rn.replace(/\s/g,'')===sn.replace(/\s/g,''))return true;
             return false;
           });
           if(match&&match.uid){updated++;return{...s,lineId:match.uid};}
           return s;
         });
-        stSave('sv_staff',next);
-        alert(`LINE IDを${updated}名分更新しました。`);
+        stSave('sv_staff',next); // GASへ保存（LINE IDを含む全スタッフデータ）
+        updatedCount=updated;
+        newStaff=next;
         return next;
       });
+      // setStateは非同期なのでsetTimeoutで後から通知
+      setTimeout(()=>{
+        alert(`LINE IDを${updatedCount}名分更新しました。\n他のブラウザは「🔄 今すぐ同期」で反映されます。`);
+      },300);
     }
-    alert(`インポート完了しました`);
   },[]);
 
   const setShared=useCallback(async(date,val)=>{
