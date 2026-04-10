@@ -338,18 +338,71 @@ function CSVImportModal({onImport,onClose}){
 
   const handleFile=(e)=>{
     const file=e.target.files[0];if(!file)return;
-    const reader=new FileReader();
-    reader.onload=ev=>{
-      const rows=parseCSV(ev.target.result);
+
+    // バイナリで読んで文字コードを確実に判定してからデコード
+    const processCSV=async()=>{
+      // 1. ArrayBufferとして読み込む
+      const buf=await new Promise((res,rej)=>{
+        const r=new FileReader();
+        r.onload=e=>res(e.target.result);
+        r.onerror=rej;
+        r.readAsArrayBuffer(file);
+      });
+      const bytes=new Uint8Array(buf);
+
+      // 2. 文字コード判定
+      // UTF-8 BOM チェック (EF BB BF)
+      const hasUtf8Bom=bytes[0]===0xEF&&bytes[1]===0xBB&&bytes[2]===0xBF;
+      // UTF-8 有効性チェック：マルチバイトシーケンスが正しいか確認
+      let isValidUtf8=true;
+      for(let i=0;i<Math.min(bytes.length,2000);i++){
+        const b=bytes[i];
+        if(b<=0x7F) continue; // ASCII
+        if(b>=0xC2&&b<=0xDF){i++;continue;} // 2byte
+        if(b>=0xE0&&b<=0xEF){i+=2;continue;} // 3byte
+        if(b>=0xF0&&b<=0xF4){i+=3;continue;} // 4byte
+        isValidUtf8=false;break;
+      }
+
+      // 3. エンコーディングを決定してデコード
+      let text;
+      if(hasUtf8Bom){
+        // UTF-8 BOM付き
+        text=new TextDecoder('utf-8').decode(bytes.slice(3));
+      } else if(isValidUtf8){
+        // UTF-8（BOMなし）
+        text=new TextDecoder('utf-8').decode(bytes);
+      } else {
+        // Shift-JIS（エルメのデフォルト）
+        try{
+          text=new TextDecoder('shift-jis').decode(bytes);
+        }catch(e){
+          // shift-jisが使えない環境のフォールバック
+          text=new TextDecoder('windows-1252').decode(bytes);
+        }
+      }
+
+      // 4. CSV解析
+      const rows=parseCSV(text);
       if(mode==='staff'){
         const parsed=rows.map(csvRowToStaff).filter(s=>s.name);
         setPreview(parsed);setLinePreview(null);
       }else{
-        // LINE ID import: match by name
-        setLinePreview(rows);setPreview(null);
+        // エルメCSVの列名を正規化してプレビュー（Shift-JIS対応後）
+        const normalized=rows.map(r=>{
+          const nameVal=r['名前']||r['表示名']||r['name']||r['氏名']||
+                        r['Name']||r['友だち名']||Object.values(r)[0]||'';
+          const uidVal=r['LINE_UID']||r['LINE UID']||r['lineId']||r['LINE ID']||
+                       r['uid']||r['UID']||r['userId']||r['LINE User ID']||
+                       r['LINEのユーザーID']||Object.values(r)[1]||'';
+          return{name:nameVal.trim(),uid:uidVal.trim()};
+        }).filter(r=>r.name||r.uid);
+        setLinePreview(normalized);setPreview(null);
       }
     };
-    reader.readAsText(file,'UTF-8');
+    processCSV().catch(err=>{
+      alert('CSVの読み込みに失敗しました。\nファイルを確認してください。\n'+err.message);
+    });
   };
 
   return ce(Modal,{title:'CSVインポート',onClose,wide:true},
@@ -394,8 +447,18 @@ function CSVImportModal({onImport,onClose}){
       ),
       ce('input',{ref:fileRef,type:'file',accept:'.csv',onChange:handleFile,style:{marginBottom:12}}),
       linePreview&&ce('div',null,
-        ce('div',{style:{fontSize:13,fontWeight:600,marginBottom:8}},'プレビュー（上位5件）'),
-        ce('div',{style:{fontSize:12,color:'#6B7280',marginBottom:8}},linePreview.slice(0,5).map((r,i)=>ce('div',{key:i},`${r['名前']||r['name']||Object.values(r)[0]} → ${r['LINE_UID']||r['LINE ID']||Object.values(r)[1]}`))),
+        ce('div',{style:{fontSize:13,fontWeight:600,marginBottom:8}},`プレビュー（${linePreview.length}件）`),
+        ce('div',{style:{maxHeight:200,overflowY:'auto',border:'1px solid var(--color-border-tertiary)',borderRadius:8,marginBottom:8}},
+          ce('table',{style:{width:'100%',borderCollapse:'collapse',fontSize:12}},
+            ce('thead',null,ce('tr',{style:{background:'var(--color-background-secondary)'}},
+              ['名前','LINE User ID'].map(h=>ce('th',{key:h,style:{padding:'6px 8px',textAlign:'left',fontWeight:500,borderBottom:'1px solid var(--color-border-tertiary)'}},h))
+            )),
+            ce('tbody',null,linePreview.map((r,i)=>ce('tr',{key:i,style:{borderBottom:'1px solid var(--color-border-tertiary)'}},
+              ce('td',{style:{padding:'5px 8px',fontWeight:500}},r.name||'—'),
+              ce('td',{style:{padding:'5px 8px',fontSize:11,color:'#6B7280',fontFamily:'monospace'}},r.uid?r.uid.slice(0,20)+'…':'—')
+            )))
+          )
+        ),
         ce('div',{style:{display:'flex',justifyContent:'flex-end',gap:8,marginTop:12}},
           ce(Btn,{onClick:onClose},'キャンセル'),
           ce(Btn,{variant:'primary',onClick:()=>onImport('lineid',linePreview)},'LINE ID更新')
@@ -2243,14 +2306,24 @@ function App(){
         stSave('sv_staff',next);return next;
       });
     }else{
-      // LINE ID import
+      // LINE ID import（正規化済みデータ {name, uid} を使用）
       setStaff(prev=>{
+        let updated=0;
         const next=prev.map(s=>{
-          const match=data.find(r=>(r['名前']||r['name']||Object.values(r)[0])===s.name);
-          if(match){return{...s,lineId:match['LINE_UID']||match['LINE ID']||Object.values(match)[1]||s.lineId};}
+          // 完全一致→スペース除去一致→部分一致の順で照合
+          const match=data.find(r=>{
+            if(!r.uid)return false;
+            const rn=r.name||'';
+            if(rn===s.name)return true;
+            if(rn.replace(/\s/g,'')===s.name.replace(/\s/g,''))return true;
+            return false;
+          });
+          if(match&&match.uid){updated++;return{...s,lineId:match.uid};}
           return s;
         });
-        stSave('sv_staff',next);return next;
+        stSave('sv_staff',next);
+        alert(`LINE IDを${updated}名分更新しました。`);
+        return next;
       });
     }
     alert(`インポート完了しました`);
