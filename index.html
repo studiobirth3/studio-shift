@@ -1,3 +1,29 @@
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<style>
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
+body{margin:0;padding:0;font-family:-apple-system,BlinkMacSystemFont,'Hiragino Kaku Gothic ProN','Noto Sans JP',sans-serif;}
+/* モバイルナビゲーション */
+.mobile-nav{display:none;}
+.mobile-header{display:none;}
+@media(max-width:640px){
+  .desktop-sidebar{display:none!important;}
+  .mobile-header{display:flex!important;position:sticky;top:0;z-index:100;
+    background:#0F2D52;color:#fff;padding:12px 16px;
+    align-items:center;justify-content:space-between;
+    box-shadow:0 2px 8px rgba(0,0,0,0.3);}
+  .mobile-nav{display:flex!important;position:fixed;bottom:0;left:0;right:0;
+    background:#0F2D52;border-top:1px solid rgba(255,255,255,0.1);
+    z-index:100;padding:4px 0 max(4px,env(safe-area-inset-bottom));}
+  .mobile-nav button{flex:1;display:flex;flex-direction:column;align-items:center;
+    gap:2px;padding:6px 2px;background:transparent;border:none;
+    color:rgba(255,255,255,0.55);font-size:9px;cursor:pointer;font-family:inherit;
+    border-top:3px solid transparent;transition:all .15s;}
+  .mobile-nav button.active{color:#fff;border-top-color:#60A5FA;}
+  .main-content{padding-bottom:calc(64px + env(safe-area-inset-bottom))!important;}
+  .admin-table{font-size:11px!important;}
+  .admin-table td,.admin-table th{padding:6px 6px!important;}
+}
+</style>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
 <div id="root"></div>
@@ -2074,7 +2100,9 @@ function StaffPortalPage({staffMember,ym,setYm,prefs,onSavePref,onLogout}){
                 transition:'all 0.15s',
                 boxShadow:sel?'0 2px 6px rgba(0,0,0,0.2)':'none',
                 transform:sel?'scale(1.05)':'scale(1)',
-                opacity:isOver?0.6:1
+                opacity:isOver?0.6:1,
+                touchAction:'manipulation',
+                WebkitUserSelect:'none',userSelect:'none'
               }
             },d);
           })
@@ -2428,42 +2456,96 @@ function App(){
   const syncColor=syncStatus==='ok'?'#4ADE80':syncStatus==='error'?'#F87171':syncStatus==='syncing'?'#FCD34D':'rgba(255,255,255,0.3)';
   const syncLabel=syncStatus==='ok'?'✓ 同期済 '+lastSync:syncStatus==='error'?'⚠ GAS接続エラー':syncStatus==='syncing'?'↻ 同期中…':'GAS未設定';
 
-  return ce('div',{style:{display:'flex',minHeight:600,fontFamily:'var(--font-sans)',fontSize:14,color:'var(--color-text-primary)'}},
-    ce('div',{style:{width:186,background:'#0F2D52',flexShrink:0,display:'flex',flexDirection:'column'}},
-      ce('div',{style:{padding:'14px 14px',borderBottom:'1px solid rgba(255,255,255,0.1)'}},
+  const pageTitle=nav.find(n=>n.id===page)?.l||'';
+  const pageContent=()=>{
+    if(page==='dashboard') return ce(Dashboard,{staff,prefs,shifts,sharedSpec,specK,specT,ym});
+    if(page==='staff')     return ce(StaffPage,{staff,onSave:saveStaff,onDelete:delStaff,onImport:handleImport});
+    if(page==='calendar')  return ce(CalendarPage,{ym,setYm,sharedSpec,specK,specT,onSetShared:setShared,onSetFac:setFac});
+    if(page==='timeline')  return ce(TimelinePage,{ym,setYm,staff,shiftData:shifts[ym],sharedSpec,specK,specT,onSaveShifts:saveShifts,shifts});
+    if(page==='prefs')     return ce(PrefsPage,{ym,setYm,staff,prefs,onSetPref:setPref,onRefreshPrefs:p=>setPrefs(p)});
+    if(page==='shifts')    return ce(ShiftsPage,{ym,setYm,staff,sharedSpec,specK,specT,prefs,shifts,onSaveShifts:saveShifts});
+    if(page==='settings')  return ce(SettingsPage,{syncFromGas,syncStatus});
+    return null;
+  };
+
+  return ce('div',{style:{display:'flex',minHeight:'100vh',fontFamily:'var(--font-sans)',fontSize:14,color:'var(--color-text-primary)'}},
+
+    // ━━━ PCサイドバー（PC/タブレット表示） ━━━
+    ce('div',{className:'desktop-sidebar',style:{width:186,background:'#0F2D52',flexShrink:0,display:'flex',flexDirection:'column',minHeight:'100vh',position:'sticky',top:0}},
+      ce('div',{style:{padding:'14px',borderBottom:'1px solid rgba(255,255,255,0.1)'}},
         ce('div',{style:{color:'#93C5FD',fontSize:11,fontWeight:500,marginBottom:2}},'スタジオバース'),
-        ce('div',{style:{color:'#fff',fontSize:13,fontWeight:600}},'シフト管理 v2')
+        ce('div',{style:{color:'#fff',fontSize:13,fontWeight:600}},'シフト管理')
       ),
       ce('nav',{style:{flex:1,padding:'6px 0'}},
-        nav.map(n=>ce('button',{key:n.id,onClick:()=>setPage(n.id),style:{display:'flex',alignItems:'center',gap:8,width:'100%',padding:'9px 14px',background:page===n.id?'rgba(255,255,255,0.12)':'transparent',border:'none',cursor:'pointer',color:page===n.id?'#fff':'rgba(255,255,255,0.65)',fontSize:12,fontWeight:page===n.id?500:400,fontFamily:'inherit',textAlign:'left',borderLeft:page===n.id?'3px solid #60A5FA':'3px solid transparent',transition:'all .15s'}},
+        nav.map(n=>ce('button',{key:n.id,onClick:()=>setPage(n.id),
+          style:{display:'flex',alignItems:'center',gap:8,width:'100%',padding:'9px 14px',
+            background:page===n.id?'rgba(255,255,255,0.12)':'transparent',border:'none',
+            cursor:'pointer',color:page===n.id?'#fff':'rgba(255,255,255,0.65)',
+            fontSize:12,fontWeight:page===n.id?500:400,fontFamily:'inherit',textAlign:'left',
+            borderLeft:page===n.id?'3px solid #60A5FA':'3px solid transparent',transition:'all .15s'}},
           ce('span',{style:{fontSize:14}},n.ic),n.l))
       ),
       ce('div',{style:{padding:'6px 10px',borderTop:'1px solid rgba(255,255,255,0.08)'}},
-        ce('button',{
-          onClick:()=>{
-            if(confirm('管理者からログアウトしますか？')){
-              sessionStorage.removeItem('sv_admin_authed');
-              setAdminAuthed(false);
-            }
-          },
-          style:{width:'100%',padding:'6px 10px',borderRadius:8,
-            border:'1px solid rgba(255,255,255,0.15)',
+        ce('button',{onClick:()=>{if(confirm('ログアウトしますか？')){sessionStorage.removeItem('sv_admin_authed');setAdminAuthed(false);}},
+          style:{width:'100%',padding:'6px 10px',borderRadius:8,border:'1px solid rgba(255,255,255,0.15)',
             background:'rgba(239,68,68,0.12)',color:'rgba(255,200,200,0.85)',
-            fontSize:11,cursor:'pointer',fontFamily:'inherit',
-            display:'flex',alignItems:'center',gap:5,marginBottom:4}
+            fontSize:11,cursor:'pointer',fontFamily:'inherit',display:'flex',alignItems:'center',gap:5,marginBottom:4}
         },'🔓 ログアウト')
       ),
-      ce('div',{style:{padding:'6px 10px',borderTop:'none'}},ce('button',{onClick:()=>setMode('staff_login'),style:{width:'100%',padding:'7px 10px',borderRadius:8,border:'1px solid rgba(255,255,255,0.2)',background:'rgba(255,255,255,0.06)',color:'rgba(255,255,255,0.75)',fontSize:12,cursor:'pointer',fontFamily:'inherit',fontWeight:500,display:'flex',alignItems:'center',gap:6}},'👤 スタッフ入力ページへ')),ce('div',{style:{padding:'8px 12px',borderTop:'1px solid rgba(255,255,255,0.1)'}},ce('div',{style:{fontSize:9,color:syncColor,marginBottom:3,lineHeight:1.4}},syncLabel),getGasUrl()&&ce('button',{onClick:()=>syncFromGas(),style:{fontSize:9,color:'rgba(255,255,255,0.5)',background:'transparent',border:'1px solid rgba(255,255,255,0.2)',borderRadius:4,padding:'2px 8px',cursor:'pointer',fontFamily:'inherit',width:'100%'}},'🔄 今すぐ同期'))
+      ce('div',{style:{padding:'6px 10px'}},
+        ce('button',{onClick:()=>setMode('staff_login'),
+          style:{width:'100%',padding:'7px 10px',borderRadius:8,border:'1px solid rgba(255,255,255,0.2)',
+            background:'rgba(255,255,255,0.06)',color:'rgba(255,255,255,0.75)',
+            fontSize:12,cursor:'pointer',fontFamily:'inherit',fontWeight:500,display:'flex',alignItems:'center',gap:6}
+        },'👤 スタッフ入力ページへ')
+      ),
+      ce('div',{style:{padding:'8px 12px',borderTop:'1px solid rgba(255,255,255,0.1)'}},
+        ce('div',{style:{fontSize:9,color:syncColor,marginBottom:3,lineHeight:1.4}},syncLabel),
+        getGasUrl()&&ce('button',{onClick:()=>syncFromGas(),
+          style:{fontSize:9,color:'rgba(255,255,255,0.5)',background:'transparent',border:'1px solid rgba(255,255,255,0.2)',borderRadius:4,padding:'2px 8px',cursor:'pointer',fontFamily:'inherit',width:'100%'}},'🔄 今すぐ同期')
+      )
     ),
-    ce('div',{style:{flex:1,overflow:'auto',background:'var(--color-background-tertiary)'}},
-      ce('div',{style:{maxWidth:1100,padding:20}},
-        page==='dashboard'&&ce(Dashboard,{staff,prefs,shifts,sharedSpec,specK,specT,ym}),
-        page==='staff'&&ce(StaffPage,{staff,onSave:saveStaff,onDelete:delStaff,onImport:handleImport}),
-        page==='calendar'&&ce(CalendarPage,{ym,setYm,sharedSpec,specK,specT,onSetShared:setShared,onSetFac:setFac}),
-        page==='timeline'&&ce(TimelinePage,{ym,setYm,staff,shiftData:shifts[ym],sharedSpec,specK,specT,onSaveShifts:saveShifts,shifts}),
-        page==='prefs'&&ce(PrefsPage,{ym,setYm,staff,prefs,onSetPref:setPref,onRefreshPrefs:p=>setPrefs(p)}),
-        page==='shifts'&&ce(ShiftsPage,{ym,setYm,staff,sharedSpec,specK,specT,prefs,shifts,onSaveShifts:saveShifts}),
-        page==='settings'&&ce(SettingsPage,{syncFromGas,syncStatus})
+
+    // ━━━ メインコンテンツ ━━━
+    ce('div',{style:{flex:1,overflow:'auto',background:'var(--color-background-tertiary)',display:'flex',flexDirection:'column'}},
+
+      // モバイルヘッダー（スマホのみ表示）
+      ce('div',{className:'mobile-header'},
+        ce('div',{style:{display:'flex',alignItems:'center',gap:10}},
+          ce('div',{style:{fontSize:22}},'📅'),
+          ce('div',null,
+            ce('div',{style:{fontSize:10,color:'#93C5FD'}},'スタジオバース'),
+            ce('div',{style:{fontSize:13,fontWeight:700}},pageTitle)
+          )
+        ),
+        ce('div',{style:{display:'flex',gap:8,alignItems:'center'}},
+          ce('div',{style:{fontSize:9,color:syncColor}},syncStatus==='ok'?'✓ 同期済':syncStatus==='syncing'?'↻ 同期中':'⚠ 未同期'),
+          ce('button',{onClick:()=>{if(confirm('ログアウトしますか？')){sessionStorage.removeItem('sv_admin_authed');setAdminAuthed(false);}},
+            style:{padding:'5px 10px',borderRadius:8,border:'1px solid rgba(255,255,255,0.3)',
+              background:'transparent',color:'rgba(255,200,200,0.85)',fontSize:11,cursor:'pointer',fontFamily:'inherit'}
+          },'🔓')
+        )
+      ),
+
+      // ページコンテンツ
+      ce('div',{className:'main-content',style:{maxWidth:1100,padding:16,margin:'0 auto',width:'100%',flex:1}},
+        pageContent()
+      ),
+
+      // モバイルボトムナビ（スマホのみ表示）
+      ce('nav',{className:'mobile-nav'},
+        nav.map(n=>ce('button',{
+          key:n.id,
+          className:page===n.id?'active':'',
+          onClick:()=>setPage(n.id)
+        },
+          ce('span',{style:{fontSize:18,lineHeight:1}},n.ic),
+          ce('span',null,n.l)
+        )),
+        ce('button',{onClick:()=>setMode('staff_login'),style:{flex:1,display:'flex',flexDirection:'column',alignItems:'center',gap:2,padding:'6px 2px',background:'transparent',border:'none',color:'rgba(255,255,255,0.55)',fontSize:9,cursor:'pointer',fontFamily:'inherit',borderTop:'3px solid transparent'}},
+          ce('span',{style:{fontSize:18,lineHeight:1}},'👤'),
+          ce('span',null,'スタッフ')
+        )
       )
     )
   );
